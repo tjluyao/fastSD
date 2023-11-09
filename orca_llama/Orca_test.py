@@ -67,7 +67,7 @@ if __name__ == '__main__':
     n_rsrv = 0
     generator = init_llm()
     
-    test = False
+    debug = False
     use_cache = True
     if use_cache:
         from llama.model import ModelArgs
@@ -76,7 +76,7 @@ if __name__ == '__main__':
     else:
         cache_size = None
 
-    while not test:
+    while not debug:
         # Stimulate user input
         if int(time.time()) % 5 == 0:
             text = generate_random_sentence()
@@ -112,8 +112,8 @@ if __name__ == '__main__':
                     #print(len(item.buffer))
             n_scheduled = n_scheduled - 1 
     else:
-        text = generate_random_sentence()
-        text2 = generate_random_sentence()
+        text = "I love playing video games, "
+        text2 = 'I miss you so much, that is the reason why'
         print(text,text2)
         request = req(text,cache_size)
         request.buffer = generator.tokenizer.encode(text, bos=True, eos=False)

@@ -321,7 +321,7 @@ def main(
     )
 
     prompts: List[str] = [
-       "She plays the piano"
+       "I love playing video games, "
     ]
 
     results = generator.text_completion(
