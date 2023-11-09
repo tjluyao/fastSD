@@ -61,31 +61,48 @@ def generate_random_sentence():
     sentence = f"{subject} {verb} {obj},"
     return sentence
 
+def random_choose_sentence():
+    sentences = [
+    "Despite facing numerous challenges, she persevered and eventually achieved her goal of becoming a successful entrepreneur.",
+    "The scientific community has made significant strides in understanding the impact of climate change on marine ecosystems.",
+    "After years of dedicated practice and training, he finally mastered the art of playing the violin with exceptional skill and precision.",
+    "The novel offers a poignant portrayal of the human condition, exploring themes of love, loss, and redemption.",
+    "Over the course of history, societies have grappled with questions of morality, justice, and the nature of human existence.",
+    "With its diverse landscape and rich cultural heritage, the country has long been a popular destination for tourists from around the world.",
+    "The documentary sheds light on the lives of indigenous communities and their struggle to preserve traditional customs in the face of modernization.",
+    "Through collaboration and innovation, the research team developed a groundbreaking treatment for a rare genetic disorder.",
+    "Despite initial skepticism, the theory gained widespread acceptance within the scientific community and revolutionized our understanding of the universe.",
+    "The symphony's haunting melody evokes a sense of nostalgia and longing, resonating deeply with audiences of all ages."
+]
+    return random.choice(sentences)
+
 if __name__ == '__main__':
     request_pool = []
     n_scheduled = 0
     n_rsrv = 0
     generator = init_llm()
     
+
     debug = False
     use_cache = True
     if use_cache:
         from llama.model import ModelArgs
         import fairscale.nn.model_parallel.initialize as fs_init
-        cache_size = (1, ModelArgs.max_seq_len, ModelArgs.n_heads // fs_init.get_model_parallel_world_size(), ModelArgs.dim // ModelArgs.n_heads)
+        cache_size = (ModelArgs.n_layers ,1, ModelArgs.max_seq_len, ModelArgs.n_heads // fs_init.get_model_parallel_world_size(), ModelArgs.dim // ModelArgs.n_heads)
     else:
         cache_size = None
 
     while not debug:
         # Stimulate user input
-        if int(time.time()) % 5 == 0:
-            text = generate_random_sentence()
+        if int(time.time()) % 5 == 0 and len(request_pool)<3:
+            #text = generate_random_sentence()
+            text = random_choose_sentence()
  
             request = req(text,cache_size)
             request.buffer = generator.tokenizer.encode(text, bos=True, eos=False)
 
             request_pool.append(request)
-            #print('Added!',request.time)
+            #print('Added!',request.time,id(request.cache_k))
         r_batch = []
         batch,n_rsrv = Select(request_pool,n_rsrv)  #batch on req
         if batch and not n_scheduled:
@@ -102,7 +119,7 @@ if __name__ == '__main__':
             for item in r_batch:
                 if item.state == 3:
                     n_rsrv = n_rsrv-item.max_tokens
-                    print('Finish!',item.time)
+                    print('Finish!',item.time,id(item.cache_k))
                     #print(item.buffer)
                     print(generator.tokenizer.decode(item.buffer)+'\n')
                     del item
@@ -112,7 +129,7 @@ if __name__ == '__main__':
                     #print(len(item.buffer))
             n_scheduled = n_scheduled - 1 
     else:
-        text = "I love playing video games, "
+        text = "I like playing video games"
         text2 = 'I miss you so much, that is the reason why'
         print(text,text2)
         request = req(text,cache_size)
@@ -120,6 +137,7 @@ if __name__ == '__main__':
         request2 = req(text,cache_size)
         request2.buffer = generator.tokenizer.encode(text2, bos=True, eos=False)
         while request.state != 3:
+            request.state = 2
             generator.generate_iter_cache([request,request2])
         else:
             print(generator.tokenizer.decode(request.buffer)+'\n')

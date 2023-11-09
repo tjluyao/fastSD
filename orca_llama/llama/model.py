@@ -309,9 +309,9 @@ class Attention(nn.Module):
         start_pos: int,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
-        item
+        cache
     ):
-
+        #print(id(cache[0]))
         bsz, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
@@ -321,14 +321,15 @@ class Attention(nn.Module):
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        item.cache_k = item.cache_k.to(xq)
-        item.cache_v = item.cache_v.to(xq)
+        [cache_k,cache_v] = cache
+        cache_k = cache_k.to(xq)
+        cache_v = cache_v.to(xq)
 
-        item.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        item.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+        cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        cache_v[:bsz, start_pos : start_pos + seqlen] = xv
 
-        keys = item.cache_k[:bsz, : start_pos + seqlen]
-        values = item.cache_v[:bsz, : start_pos + seqlen]
+        keys = cache_k[:bsz, : start_pos + seqlen]
+        values = cache_v[:bsz, : start_pos + seqlen]
 
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(keys, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
@@ -457,7 +458,7 @@ class TransformerBlock(nn.Module):
         start_pos: int,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
-        item
+        cache
     ):
         """
         Perform a forward pass through the TransformerBlock.
@@ -473,8 +474,7 @@ class TransformerBlock(nn.Module):
 
         """
         h = x + self.attention.forward_cache(
-            self.attention_norm(x), start_pos, freqs_cis, mask, item
-            #self.attention_norm(x), start_pos, freqs_cis, mask, cache_k, cache_v
+            self.attention_norm(x), start_pos, freqs_cis, mask, cache
         )
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
@@ -558,12 +558,12 @@ class Transformer(nn.Module):
     @torch.inference_mode()
     def forward_cache(self, item):
         if item.state == 0:
-            tokens = torch.tensor(item.buffer, dtype=torch.long, device="cuda").unsqueeze(dim=0)
+            tokens = torch.tensor(item.buffer[:], dtype=torch.long, device="cuda").unsqueeze(dim=0)
             start_pos = 0
-            seqlen = len(item.buffer)
+            seqlen = len(item.buffer) 
         else:
             l = len(item.buffer) - 1
-            tokens = torch.tensor([item.buffer[l]], dtype=torch.long, device="cuda").unsqueeze(dim=0)
+            tokens = torch.tensor(item.buffer[l:], dtype=torch.long, device="cuda").unsqueeze(dim=0)
             start_pos = l
             seqlen = 1
 
@@ -579,8 +579,8 @@ class Transformer(nn.Module):
             mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
         for layer in self.layers:
-            #h = layer.forward_cache(h, start_pos, freqs_cis, mask, item.cache_k, item.cache_v)
-            h = layer.forward_cache(h, start_pos, freqs_cis, mask, item)
+            cache = [item.cache_k[layer.layer_id,:],item.cache_v[layer.layer_id,:]]
+            h = layer.forward_cache(h, start_pos, freqs_cis, mask, cache)
         h = self.norm(h)
 
         output = self.output(h).float()
