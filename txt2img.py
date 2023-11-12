@@ -59,30 +59,12 @@ VERSION2SPECS = {
     },
 }
 
-def load_img(key=None, n=1, display=False, device="cuda"):
-    image = get_interactive_image(key=key)
-    if image is None:
-        return None
-    if display:
-        print(image)
-    w, h = image.size
-    print(f"loaded input image of size ({w}, {h})")
-    width, height = map(
-        lambda x: x - x % 64, (w, h)
-    )  # resize to integer multiple of 64
-    image = image.resize((width//n, height//n))
-    image = np.array(image.convert("RGB"))
-    image = image[None].transpose(0, 3, 1, 2)
-    image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
-    return image.to(device)
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Demo of argparse')
     parser.add_argument('--model', type=str, default='SDXL-base-1.0', required= False)
-    parser.add_argument('--prompt', type=str, default='A typical Chinese student', required= False)
+    parser.add_argument('--prompt', type=str, default='ID photo, Typical Chinese boy, Undergraduate student, 8k', required= False)
     parser.add_argument('--n_prompt', type=str, default='', required= False)
     parser.add_argument('--seed', type=int, default=49, required= False)
-    parser.add_argument('--input_img', type=str, default='inputs/00.jpg', required= False)
     parser.add_argument('--output', type=str, default='outputs/', required= False)
 
     args = parser.parse_args()
@@ -90,7 +72,6 @@ if __name__ == '__main__':
     prompt = args.prompt
     negative_prompt = args.n_prompt
     seed = args.seed
-    input = args.input_img
     output = args.output
 
     version_dict = VERSION2SPECS[version]
@@ -105,8 +86,10 @@ if __name__ == '__main__':
     finish_denoising = False
     add_pipeline = False
     
-    img = load_img(input,n=2)
-    H, W = img.shape[2], img.shape[3]
+    W = version_dict["W"]
+    H = version_dict["H"]
+    C = version_dict["C"]
+    F = version_dict["f"]
 
     init_dict = {
         "orig_width": W,
@@ -121,21 +104,21 @@ if __name__ == '__main__':
         prompt=prompt,
         negative_prompt=negative_prompt,
     )
-    strength = 0.75
-    sampler = init_sampling(
-        img2img_strength=strength,
-        stage2strength=stage2strength,
-    )
+
+    sampler = init_sampling(stage2strength=stage2strength)
     num_rows = 1
     num_cols = 2
     num_samples = num_rows * num_cols
 
-    samples = do_img2img(
-        repeat(img, "1 ... -> n ...", n=num_samples),
+    samples = do_sample(
         state["model"],
         sampler,
-        value_dict,
+        value_dict,            
         num_samples,
+        H,
+        W,
+        C,
+        F,
         force_uc_zero_embeddings=["txt"] if not is_legacy else [],
         return_latents=add_pipeline,
         filter=state.get("filter"),

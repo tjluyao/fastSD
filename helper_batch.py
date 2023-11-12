@@ -456,35 +456,25 @@ def do_sample(
     W,
     C,
     F,
-    force_uc_zero_embeddings: List = None,
-    batch2model_input: List = None,
+    force_uc_zero_embeddings: List = [],
+    batch2model_input: List = [],
     return_latents=False,
     filter=None,
 ):
     print("Sampling")
-    if force_uc_zero_embeddings is None:
-        force_uc_zero_embeddings = []
-    if batch2model_input is None:
-        batch2model_input = []
-
     precision_scope = autocast
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
                 num_samples = [num_samples]
+
                 load_model(model.conditioner)
                 batch, batch_uc = get_batch(
                     model.conditioner,
                     value_dict,
                     num_samples,
                 )
-                for key in batch:
-                    if isinstance(batch[key], torch.Tensor):
-                        print(key, batch[key].shape)
-                    elif isinstance(batch[key], list):
-                        print(key, [len(l) for l in batch[key]])
-                    else:
-                        print(key, batch[key])
+
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
                     batch_uc=batch_uc,
@@ -536,16 +526,17 @@ def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"
     keys = list(set([x.input_key for x in conditioner.embedders]))
     batch = {}
     batch_uc = {}
+    num_input = N[0]//len(value_dict["prompt"])
 
     for key in keys:
         if key == "txt":
             batch["txt"] = (
-                np.repeat([value_dict["prompt"]], repeats=math.prod(N))
+                np.repeat(value_dict["prompt"], repeats=num_input)
                 .reshape(N)
                 .tolist()
             )
             batch_uc["txt"] = (
-                np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N))
+                np.repeat(value_dict["negative_prompt"], repeats=num_input)
                 .reshape(N)
                 .tolist()
             )

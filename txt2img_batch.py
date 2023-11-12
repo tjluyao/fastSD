@@ -1,6 +1,6 @@
 import argparse
 from pytorch_lightning import seed_everything
-from helper import *
+from helper_batch import *
 
 VERSION2SPECS = {
     "SDXL-base-1.0": {
@@ -77,6 +77,9 @@ if __name__ == '__main__':
     version_dict = VERSION2SPECS[version]
     seed_everything(seed)
 
+    prompts = ['office lady sitting, 8k, high resolution','super girl standing, 8k, high resolution']
+    negative_prompts = ['','']
+
     state = init_model(version_dict)
     model = state["model"]
 
@@ -101,11 +104,13 @@ if __name__ == '__main__':
     value_dict = init_embedder_options(
         state["model"].conditioner,
         init_dict,
-        prompt=prompt,
-        negative_prompt=negative_prompt,
+        prompt=prompts,
+        negative_prompt=negative_prompts,
     )
 
-    sampler, num_rows, num_cols = init_sampling(stage2strength=stage2strength, num=2)
+    sampler = init_sampling(stage2strength=stage2strength, steps=30)
+    num_rows = 1
+    num_cols = 2 * len(prompts)
     num_samples = num_rows * num_cols
 
     samples = do_sample(
