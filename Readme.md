@@ -10,3 +10,6 @@ Run Image to Image:
 `python img2img.py --prompt <str> --input_img <img_dir>`   
 Run Text to Image on batch:  
 `python txt2img_batch.py`  
+Run Text to Image on req_answer:  
+`python txt2img_req.py`  
+and text in the prompt one by one.  

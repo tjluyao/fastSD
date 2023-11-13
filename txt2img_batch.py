@@ -77,7 +77,7 @@ if __name__ == '__main__':
     version_dict = VERSION2SPECS[version]
     seed_everything(seed)
 
-    prompts = ['office lady sitting, 8k, high resolution','super girl standing, 8k, high resolution']
+    prompts = ['office lady sitting, black stocking, 8k, high resolution','super girl standing, short skirt, 8k, high resolution']
     negative_prompts = ['','']
 
     state = init_model(version_dict)
@@ -101,8 +101,11 @@ if __name__ == '__main__':
         "target_height": H,
     }
 
+    keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
+
+    states = [keys,init_dict]
     value_dict = init_embedder_options(
-        state["model"].conditioner,
+        keys,
         init_dict,
         prompt=prompts,
         negative_prompt=negative_prompts,

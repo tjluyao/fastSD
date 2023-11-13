@@ -137,9 +137,8 @@ def unload_model(model):
         model.cpu()
         torch.cuda.empty_cache()
 
-def init_embedder_options(conditioner, init_dict, prompt=None, negative_prompt=None):
+def init_embedder_options(keys, init_dict, prompt=None, negative_prompt=None):
     # Hardcoded demo settings; might undergo some changes in the future
-    keys = list(set([x.input_key for x in conditioner.embedders]))
     value_dict = {}
     for key in keys:
         if key == "txt":
