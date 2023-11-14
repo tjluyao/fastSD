@@ -4,18 +4,32 @@ import time
 import threading
 
 class request(object):
-    def __init__(self, prompt, n_prompt, num, states) -> None:
+    def __init__(self, 
+                 prompt, 
+                 n_prompt: str='', 
+                 num: int=2, 
+                 model: str='SDXL-base-1.0',
+                 steps: int=30) -> None:
         self.id = time.time()
         self.prompt = prompt
         self.negative_prompt = n_prompt
         self.num = num
-        self.value_dict = self.get_valuedict(states, prompt, n_prompt)
+        self.steps = steps
+        self.value_dict = self.get_valuedict(model, prompt, n_prompt)
+        self.sampling = {}
         pass
 
-    def get_valuedict(self,states,prompt,negative_prompt):
+    def get_valuedict(self,model,prompt,negative_prompt):
+        keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
+        init_dict = {
+        "orig_width": W,
+        "orig_height": H,
+        "target_width": W,
+        "target_height": H,
+    }
         value_dict = init_embedder_options(
-        states[0],
-        states[1],
+        keys,
+        init_dict,
         prompt=prompt,
         negative_prompt=negative_prompt,
         )
@@ -171,7 +185,7 @@ def get_condition(model, value_dicts, force_uc_zero_embeddings=[], batch2model_i
 
     return randn, c, uc, additional_model_inputs
 
-def sample(model, input, c ,uc, additional_model_inputs):
+def sample_batch(model, input, c ,uc, additional_model_inputs):
     print('Start sampling')
     with torch.no_grad():
         with autocast("cuda"):
@@ -187,7 +201,6 @@ def sample(model, input, c ,uc, additional_model_inputs):
                 return samples_z
 
 def decode(model, samples_z, return_latents=False, filter=None):
-    print('Start decoding')
     with torch.no_grad():
         with autocast("cuda"):
             with model.ema_scope():
@@ -206,14 +219,64 @@ def decode(model, samples_z, return_latents=False, filter=None):
                 return samples
 
 def collect_input():
+    global wait_to_encode
     while True:
         user_input = input()
-        req = request(prompt=user_input,
-                   n_prompt='',
-                   num=2,
-                   states=states)
-        value_dicts.append(req.value_dict)
+        if user_input != '\n':
+            req = request(prompt=user_input,
+                        n_prompt='',
+                        num=2,
+                        )
+            wait_to_encode.append(req)
 
+def collect_batch():
+    global wait_to_encode
+    global wait_to_decode
+    while True:
+        if wait_to_encode:
+            on_process = wait_to_encode
+            wait_to_encode = []
+
+            value_dicts = []
+            for i in on_process:
+                value_dicts.append(i.value_dict)
+
+            randn, c, uc, ami= get_condition(state["model"],value_dicts)
+            t = 0
+            for i in on_process:
+                pic = randn[t:t+i.num,]
+                ic = {k: c[k][t:t+i.num,] for k in c}
+                iuc = {k: uc[k][t:t+i.num,] for k in uc}
+
+                pic, s_in, sigmas, num_sigmas, ic, iuc = sampler.prepare_sampling_loop(x=pic, cond=ic, uc=iuc, num_steps=i.steps)
+                i.sampling = {'pic':pic, 
+                                'step':0,
+                                's_in':s_in,
+                                'sigmas':sigmas,
+                                'num_sigmas':num_sigmas,
+                                'c':ic,
+                                'uc':iuc,
+                                'ami':ami,
+                                }
+                sampling.append(i)
+                t = t + i.num
+
+        if wait_to_decode:
+            print('Start decoding')
+            samples_z = torch.cat([i.sampling['pic'] for i in wait_to_decode], dim=0)
+            samples = decode(state["model"],samples_z)
+            perform_save_locally(output, samples)
+            for i in wait_to_decode:
+                wait_to_decode.remove(i)
+                print('Saved',i.id)
+                del i
+
+        time.sleep(10)
+
+wait_to_encode = []
+sampling = []
+wait_to_decode = []
+    
 if __name__ == '__main__':
     version = 'SDXL-base-1.0'
     seed = 49
@@ -232,48 +295,63 @@ if __name__ == '__main__':
     W = version_dict["W"]
     H = version_dict["H"]
     C = version_dict["C"]
-    F = version_dict["f"]
-
-    init_dict = {
-        "orig_width": W,
-        "orig_height": H,
-        "target_width": W,
-        "target_height": H,
-    }
-
-    keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
-    states = [keys,init_dict]
-    
+    F = version_dict["f"] 
 
     sampler = init_sampling(stage2strength=stage2strength, steps=steps)
-    req1 = request(prompt='club girl, sexy, short skirt',
-                   n_prompt='',
-                   num=2,
-                   states=states)
-    req2 = request(prompt='jk girl, high school girl',
-                   n_prompt='',
-                   num=2,
-                   states=states)
-    
-    value_dicts = []
 
     input_thread = threading.Thread(target=collect_input)
-    input_thread.daemon = True  # 设置为守护线程，当主线程退出时自动退出
+    input_thread.daemon = True
     input_thread.start()
 
+    batch_thread = threading.Thread(target=collect_batch)
+    batch_thread.daemon = True
+    batch_thread.start()
+
+    print('Finish init!')
     while True:
-        if value_dicts:
+        if sampling:
+            x = torch.cat([i.sampling['pic'] for i in sampling], dim=0)
+            begin = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step']] for i in sampling], dim=0)
+            end = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step'] + 1] for i in sampling], dim=0)
 
-            on_process = list(value_dicts)
+            dict_list = [d.sampling['c'] for d in sampling]
+            cond = {}
+            for key in dict_list[0]:
+                cond[key] = torch.cat([d[key] for d in dict_list], dim=0)
 
-            value_dicts = []
+            dict_list = [d.sampling['uc'] for d in sampling]
+            uc = {}
+            for key in dict_list[0]:
+                uc[key] = torch.cat([d[key] for d in dict_list], dim=0)
 
-            randn, c, uc, ami= get_condition(state["model"],on_process)
+            #gamma = min(sampler.s_churn / (i.sampling['num_sigmas'] - 1), 2**0.5 - 1) if sampler.s_tmin <= i.sampling['sigmas'][i.sampling['step']] <= sampler.s_tmax else 0.0
+            gamma = 0.0
+            print('Start sampling step')
+            with torch.no_grad():
+                with autocast("cuda"):
+                    with state["model"].ema_scope():
+                        def denoiser(input, sigma, c):
+                            return state["model"].denoiser(state["model"].model, input, sigma, c, **{})
 
-            sample_z = sample(state["model"],randn,c,uc,ami)
-
-            samples = decode(state["model"],sample_z)
-
-            perform_save_locally(output, samples)
-
-        time.sleep(10)
+                        load_model(state["model"].denoiser)
+                        load_model(state["model"].model)
+                        samples = sampler.sampler_step(
+                            begin,
+                            end,
+                            denoiser,
+                            x,
+                            cond,
+                            uc,
+                            gamma,
+                            )
+                        unload_model(state["model"].model)
+                        unload_model(state["model"].denoiser)
+            t = 0
+            for i in sampling:
+                i.sampling['pic'] = samples[t:t+i.num]
+                i.sampling['step'] = i.sampling['step'] + 1
+                if  i.sampling['step'] == i.sampling['num_sigmas'] - 1:
+                    print('Finish sampling',i.id)
+                    sampling.remove(i)
+                    wait_to_decode.append(i)
+                t = t+i.num
