@@ -1,7 +1,13 @@
 from pytorch_lightning import seed_everything
 from helper_batch import *
+from sgm.modules.diffusionmodules.sampling import *
 import time
 import threading
+import argparse
+
+wait_to_encode = []
+wait_to_sample = []
+wait_to_decode = []
 
 class request(object):
     def __init__(self, 
@@ -93,6 +99,20 @@ VERSION2SPECS = {
     },
 }
 
+samplers = [
+            "EulerEDMSampler",
+            "HeunEDMSampler",
+            "EulerAncestralSampler",
+            "DPMPP2SAncestralSampler",
+            "DPMPP2MSampler",
+            "LinearMultistepSampler",
+        ]
+
+discretizations=[
+            "LegacyDDPMDiscretization",
+            "EDMDiscretization",
+        ]
+
 def get_batch_req(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):
     # Hardcoded demo setups; might undergo some changes in the future
     keys = list(set([x.input_key for x in conditioner.embedders]))
@@ -182,23 +202,8 @@ def get_condition(model, value_dicts, force_uc_zero_embeddings=[], batch2model_i
 
                 shape = (math.prod(num_samples), C, H // F, W // F)
                 randn = torch.randn(shape).to("cuda")
-
+    print('Finish condition')
     return randn, c, uc, additional_model_inputs
-
-def sample_batch(model, input, c ,uc, additional_model_inputs):
-    print('Start sampling')
-    with torch.no_grad():
-        with autocast("cuda"):
-            with model.ema_scope():
-                def denoiser(input, sigma, c):
-                    return model.denoiser(model.model, input, sigma, c, **additional_model_inputs)
-
-                load_model(model.denoiser)
-                load_model(model.model)
-                samples_z = sampler(denoiser, input, cond=c, uc=uc)
-                unload_model(model.model)
-                unload_model(model.denoiser)
-                return samples_z
 
 def decode(model, samples_z, return_latents=False, filter=None):
     with torch.no_grad():
@@ -231,57 +236,136 @@ def collect_input():
 
 def collect_batch():
     global wait_to_encode
+    global wait_to_sample
     global wait_to_decode
-    while True:
-        if wait_to_encode:
-            on_process = wait_to_encode
-            wait_to_encode = []
+    with torch.no_grad():
+        with autocast("cuda"):
+            with state["model"].ema_scope():
+                while True:
+                    if wait_to_encode:
+                        on_process = wait_to_encode
+                        wait_to_encode = []
 
-            value_dicts = []
-            for i in on_process:
-                value_dicts.append(i.value_dict)
+                        value_dicts = []
+                        for i in on_process:
+                            value_dicts.append(i.value_dict)
 
-            randn, c, uc, ami= get_condition(state["model"],value_dicts)
-            t = 0
-            for i in on_process:
-                pic = randn[t:t+i.num,]
-                ic = {k: c[k][t:t+i.num,] for k in c}
-                iuc = {k: uc[k][t:t+i.num,] for k in uc}
+                        randn, c, uc, ami= get_condition(state["model"],value_dicts)
+                        t = 0
+                        for i in on_process:
+                            pic = randn[t:t+i.num,]
+                            ic = {k: c[k][t:t+i.num,] for k in c}
+                            iuc = {k: uc[k][t:t+i.num,] for k in uc}
 
-                pic, s_in, sigmas, num_sigmas, ic, iuc = sampler.prepare_sampling_loop(x=pic, cond=ic, uc=iuc, num_steps=i.steps)
-                i.sampling = {'pic':pic, 
-                                'step':0,
-                                's_in':s_in,
-                                'sigmas':sigmas,
-                                'num_sigmas':num_sigmas,
-                                'c':ic,
-                                'uc':iuc,
-                                'ami':ami,
-                                }
-                sampling.append(i)
-                t = t + i.num
+                            pic, s_in, sigmas, num_sigmas, ic, iuc = sampler.prepare_sampling_loop(x=pic, cond=ic, uc=iuc, num_steps=i.steps)
+                            i.sampling = {'pic':pic, 
+                                            'step':0,
+                                            's_in':s_in,
+                                            'sigmas':sigmas,
+                                            'num_sigmas':num_sigmas,
+                                            'c':ic,
+                                            'uc':iuc,
+                                            'ami':ami,
+                                            }
+                        
 
-        if wait_to_decode:
-            print('Start decoding')
-            samples_z = torch.cat([i.sampling['pic'] for i in wait_to_decode], dim=0)
-            samples = decode(state["model"],samples_z)
-            perform_save_locally(output, samples)
-            for i in wait_to_decode:
-                wait_to_decode.remove(i)
-                print('Saved',i.id)
-                del i
+                            wait_to_sample.append(i)
+                            t = t + i.num
 
-        time.sleep(10)
+                    if wait_to_decode:
+                        print('Start decoding')
+                        decode_process = wait_to_decode
+                        wait_to_decode = []
+                        samples_z = torch.cat([i.sampling['pic'] for i in decode_process], dim=0)
+                        samples = decode(state["model"],samples_z)
+                        #perform_save_locally(output, samples)  #Save to local file
+                        for i in decode_process:
+                            decode_process.remove(i)
+                            print('Saved',i.id)
+                            del i
 
-wait_to_encode = []
-sampling = []
-wait_to_decode = []
-    
+                    time.sleep(10)
+
+max_bs = 3
+n_slots = 40 * 1024 * 1024
+def orca_select(pool,n_rsrv):
+    batch = []
+    pool = sorted(pool, key=lambda request: request.id)
+
+    for item in pool:
+        if len(batch) == max_bs:
+            break
+
+        if False:
+            new_n_rsrv = n_rsrv 
+            if new_n_rsrv > n_slots:
+                break
+            n_rsrv = new_n_rsrv
+        
+        batch.append(item)
+
+    return batch, n_rsrv
+
+def sample(sampling):
+    with torch.no_grad():
+        with autocast("cuda"):
+            with state["model"].ema_scope():
+                        if isinstance(sampler, EDMSampler):
+                            begin = []
+                            for i in sampling:
+                                gamma = min(sampler.s_churn / (i.sampling['num_sigmas'] - 1), 2**0.5 - 1) if sampler.s_tmin <= i.sampling['sigmas'][i.sampling['step']] <= sampler.s_tmax else 0.0
+                                sigma = i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step']]
+                                sigma_hat = sigma * (gamma + 1.0)
+                                if gamma > 0:
+                                    eps = torch.randn_like(i.sampling['pic']) * sampler.s_noise
+                                    i.sampling['pic'] = i.sampling['pic'] + eps * append_dims(sigma_hat**2 - sigma**2, x.ndim) ** 0.5
+                                    
+                                begin.append(sigma_hat)
+                            begin = torch.cat(begin,dim=0)
+                        else: 
+                            begin = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step']] for i in sampling], dim=0)
+                            
+                        x = torch.cat([i.sampling['pic'] for i in sampling], dim=0)
+                        end = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step'] + 1] for i in sampling], dim=0)
+
+                        dict_list = [d.sampling['c'] for d in sampling]
+                        cond = {}
+                        for key in dict_list[0]:
+                            cond[key] = torch.cat([d[key] for d in dict_list], dim=0)
+
+                        dict_list = [d.sampling['uc'] for d in sampling]
+                        uc = {}
+                        for key in dict_list[0]:
+                            uc[key] = torch.cat([d[key] for d in dict_list], dim=0)
+                        
+                        samples = sampler.sampler_step_g(begin,end,denoiser,x,cond,uc) if isinstance(sampler, EDMSampler) else sampler.sampler_step(begin,end,denoiser,x,cond,uc)
+                                    
+                        t = 0
+                        for i in sampling:
+                            i.sampling['pic'] = samples[t:t+i.num]
+                            i.sampling['step'] = i.sampling['step'] + 1
+                            print('Finish step ',i.sampling['step'], i.id)
+                            if  i.sampling['step'] == i.sampling['num_sigmas'] - 1:
+                                print('Finish sampling',i.id)
+                                sampling.remove(i)
+                                wait_to_decode.append(i)
+                            t = t+i.num
+        return sampling
+
 if __name__ == '__main__':
-    version = 'SDXL-base-1.0'
-    seed = 49
-    output = 'outputs/'
-    steps = 30
+    parser = argparse.ArgumentParser(description='Demo of argparse')
+    parser.add_argument('--version', type=str, default='SDXL-base-1.0', required=False)
+    parser.add_argument('--sampler', type=str, default='EulerEDMSampler', required=False)
+    parser.add_argument('--output', type=str, default='outputs/', required=False)
+    parser.add_argument('--seed', type=int, default=49, required=False)
+    parser.add_argument('--default_steps', type=int, default=30, required=False)
+
+    args = parser.parse_args()
+    version = args.version
+    sampler = args.sampler
+    seed = args.seed
+    output = args.output
+    steps = args.default_steps
 
     version_dict = VERSION2SPECS[version]
     seed_everything(seed)
@@ -297,7 +381,7 @@ if __name__ == '__main__':
     C = version_dict["C"]
     F = version_dict["f"] 
 
-    sampler = init_sampling(stage2strength=stage2strength, steps=steps)
+    sampler = init_sampling(stage2strength=stage2strength, steps=steps, sampler=sampler)
 
     input_thread = threading.Thread(target=collect_input)
     input_thread.daemon = True
@@ -307,51 +391,31 @@ if __name__ == '__main__':
     batch_thread.daemon = True
     batch_thread.start()
 
+    def denoiser(input, sigma, c):
+        return state["model"].denoiser(state["model"].model, input, sigma, c)
+
+    load_model(state["model"].denoiser)
+    load_model(state["model"].model)
     print('Finish init!')
+
+    n_scheduled = 0
+    n_rsrv = 0
+
     while True:
-        if sampling:
-            x = torch.cat([i.sampling['pic'] for i in sampling], dim=0)
-            begin = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step']] for i in sampling], dim=0)
-            end = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step'] + 1] for i in sampling], dim=0)
+        r_batch = []
+        batch,n_rsrv = orca_select(wait_to_sample,n_rsrv)  #batch on req
+        if batch and not n_scheduled:
 
-            dict_list = [d.sampling['c'] for d in sampling]
-            cond = {}
-            for key in dict_list[0]:
-                cond[key] = torch.cat([d[key] for d in dict_list], dim=0)
+            for item in batch:
+                wait_to_sample.remove(item)
+            
+            r_batch = sample(batch)
+            n_scheduled = n_scheduled + 1
 
-            dict_list = [d.sampling['uc'] for d in sampling]
-            uc = {}
-            for key in dict_list[0]:
-                uc[key] = torch.cat([d[key] for d in dict_list], dim=0)
+        if r_batch:
+            for item in r_batch:
+                wait_to_sample.append(item)
+            n_scheduled = n_scheduled - 1 
 
-            #gamma = min(sampler.s_churn / (i.sampling['num_sigmas'] - 1), 2**0.5 - 1) if sampler.s_tmin <= i.sampling['sigmas'][i.sampling['step']] <= sampler.s_tmax else 0.0
-            gamma = 0.0
-            print('Start sampling step')
-            with torch.no_grad():
-                with autocast("cuda"):
-                    with state["model"].ema_scope():
-                        def denoiser(input, sigma, c):
-                            return state["model"].denoiser(state["model"].model, input, sigma, c, **{})
-
-                        load_model(state["model"].denoiser)
-                        load_model(state["model"].model)
-                        samples = sampler.sampler_step(
-                            begin,
-                            end,
-                            denoiser,
-                            x,
-                            cond,
-                            uc,
-                            gamma,
-                            )
-                        unload_model(state["model"].model)
-                        unload_model(state["model"].denoiser)
-            t = 0
-            for i in sampling:
-                i.sampling['pic'] = samples[t:t+i.num]
-                i.sampling['step'] = i.sampling['step'] + 1
-                if  i.sampling['step'] == i.sampling['num_sigmas'] - 1:
-                    print('Finish sampling',i.id)
-                    sampling.remove(i)
-                    wait_to_decode.append(i)
-                t = t+i.num
+    unload_model(state["model"].denoiser)
+    unload_model(state["model"].model)
