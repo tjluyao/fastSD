@@ -1,6 +1,7 @@
 import math
 import os
 from typing import List, Union
+import time
 
 import numpy as np
 import torch
@@ -281,20 +282,6 @@ def init_sampling(
     sampler = "EulerEDMSampler",
     discretization = "LegacyDDPMDiscretization",
 ):
-    samplers = [
-            "EulerEDMSampler",
-            "HeunEDMSampler",
-            "EulerAncestralSampler",
-            "DPMPP2SAncestralSampler",
-            "DPMPP2MSampler",
-            "LinearMultistepSampler",
-        ]
-
-    discretizations=[
-            "LegacyDDPMDiscretization",
-            "EDMDiscretization",
-        ]
-
     discretization_config = get_discretization(discretization, key=key)
 
     guider_config = get_guider(key=key)
@@ -465,6 +452,7 @@ def do_sample(
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
+                t = time.time()
                 num_samples = [num_samples]
 
                 load_model(model.conditioner)
@@ -493,6 +481,8 @@ def do_sample(
 
                 shape = (math.prod(num_samples), C, H // F, W // F)
                 randn = torch.randn(shape).to("cuda")
+                print('Condition Time: ', time.time()-t)
+                t = time.time()
 
                 def denoiser(input, sigma, c):
                     return model.denoiser(
@@ -504,7 +494,8 @@ def do_sample(
                 samples_z = sampler(denoiser, randn, cond=c, uc=uc)
                 unload_model(model.model)
                 unload_model(model.denoiser)
-
+                print('Sampling Time: ', time.time()-t)
+                t = time.time()
                 load_model(model.first_stage_model)
                 samples_x = model.decode_first_stage(samples_z)
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
@@ -515,6 +506,7 @@ def do_sample(
 
                 grid = torch.stack([samples])
                 grid = rearrange(grid, "n b c h w -> (n h) (b w) c")
+                print('Decoding Time: ', time.time()-t)
                 if return_latents:
                     return samples, samples_z
                 return samples
