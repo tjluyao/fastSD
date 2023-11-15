@@ -108,6 +108,17 @@ class EDMSampler(SingleStepDiffusionSampler):
             euler_step, x, d, dt, next_sigma, denoiser, cond, uc
         )
         return x
+    
+    def sampler_step_g(self, sigma, next_sigma, denoiser, x, cond, uc=None):
+        denoised = self.denoise(x, denoiser, sigma, cond, uc)
+        d = to_d(x, sigma, denoised)
+        dt = append_dims(next_sigma - sigma, x.ndim)
+
+        euler_step = self.euler_step(x, d, dt)
+        x = self.possible_correction_step(
+            euler_step, x, d, dt, next_sigma, denoiser, cond, uc
+        )
+        return x
 
     def __call__(self, denoiser, x, cond, uc=None, num_steps=None):
         x, s_in, sigmas, num_sigmas, cond, uc = self.prepare_sampling_loop(
