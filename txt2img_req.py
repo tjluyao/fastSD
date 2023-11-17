@@ -1,5 +1,5 @@
 from pytorch_lightning import seed_everything
-from helper_batch import *
+from helpers import *
 from sgm.modules.diffusionmodules.sampling import *
 import time
 import threading
@@ -246,9 +246,7 @@ def collect_batch():
                         on_process = wait_to_encode
                         wait_to_encode = []
 
-                        value_dicts = []
-                        for i in on_process:
-                            value_dicts.append(i.value_dict)
+                        value_dicts = [i.value_dict for i in on_process]
 
                         randn, c, uc, ami= get_condition(state["model"],value_dicts)
                         t = 0

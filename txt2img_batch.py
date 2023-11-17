@@ -1,6 +1,6 @@
 import argparse
 from pytorch_lightning import seed_everything
-from helper_batch import *
+from helpers import *
 
 VERSION2SPECS = {
     "SDXL-base-1.0": {

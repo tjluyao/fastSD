@@ -254,9 +254,9 @@ def get_guider(key):
             "target": "sgm.modules.diffusionmodules.guiders.IdentityGuider"
         }
     elif guider == "VanillaCFG":
-        scale = 5.0
+        scale = 5.0 #cfg-scale
 
-        thresholder = 'None'
+        thresholder = 'None' #Thresholder
 
         if thresholder == "None":
             dyn_thresh_config = {
@@ -307,8 +307,8 @@ def get_discretization(discretization, key=1):
             "target": "sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization",
         }
     elif discretization == "EDMDiscretization":
-        sigma_min = 0.03  # 0.0292
-        sigma_max = 14.61  # 14.6146
+        sigma_min = 0.0292  # 0.0292
+        sigma_max = 14.6146  # 14.6146
         rho = 3.0
         discretization_config = {
             "target": "sgm.modules.diffusionmodules.discretizer.EDMDiscretization",
