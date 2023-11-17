@@ -169,7 +169,11 @@ def get_batch_req(conditioner, value_dict, N: Union[List, ListConfig], device="c
             batch_uc[key] = torch.clone(batch[key])
     return batch, batch_uc
 
-def get_condition(model, value_dicts, force_uc_zero_embeddings=[], batch2model_input=[]):
+def get_condition(model, 
+                  value_dicts, 
+                  force_uc_zero_embeddings=[], 
+                  batch2model_input=[],
+                  ):
     print("Getting condition")
     with torch.no_grad():
         with autocast("cuda"):
@@ -182,7 +186,6 @@ def get_condition(model, value_dicts, force_uc_zero_embeddings=[], batch2model_i
                     value_dicts,
                     num_samples,
                 )
-
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
                     batch_uc=batch_uc,
@@ -202,8 +205,8 @@ def get_condition(model, value_dicts, force_uc_zero_embeddings=[], batch2model_i
 
                 shape = (math.prod(num_samples), C, H // F, W // F)
                 randn = torch.randn(shape).to("cuda")
-    print('Finish condition')
-    return randn, c, uc, additional_model_inputs
+                print('Finish condition')
+                return randn, c, uc, additional_model_inputs
 
 def decode(model, samples_z, return_latents=False, filter=None):
     with torch.no_grad():
@@ -278,8 +281,8 @@ def collect_batch():
                         samples = decode(state["model"],samples_z)
                         #perform_save_locally(output, samples)  #Save to local file
                         for i in decode_process:
-                            decode_process.remove(i)
                             print('Saved',i.id)
+                            decode_process.remove(i)
                             del i
 
                     time.sleep(10)
@@ -341,14 +344,10 @@ def sample(sampling):
                         t = 0
                         for i in sampling:
                             i.sampling['pic'] = samples[t:t+i.num]
-                            i.sampling['step'] = i.sampling['step'] + 1
                             print('Finish step ',i.sampling['step'], i.id)
-                            if  i.sampling['step'] == i.sampling['num_sigmas'] - 1:
-                                print('Finish sampling',i.id)
-                                sampling.remove(i)
-                                wait_to_decode.append(i)
+                            i.sampling['step'] = i.sampling['step'] + 1
                             t = t+i.num
-        return sampling
+                        return sampling
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Demo of argparse')
@@ -404,15 +403,19 @@ if __name__ == '__main__':
         batch,n_rsrv = orca_select(wait_to_sample,n_rsrv)  #batch on req
         if batch and not n_scheduled:
 
-            for item in batch:
-                wait_to_sample.remove(item)
+            for i in batch:
+                wait_to_sample.remove(i)
             
             r_batch = sample(batch)
             n_scheduled = n_scheduled + 1
 
         if r_batch:
-            for item in r_batch:
-                wait_to_sample.append(item)
+            for i in r_batch:
+                if i.sampling['step'] >= i.sampling['num_sigmas'] - 1:
+                    print('Finish sampling',i.id)
+                    wait_to_decode.append(i)
+                else:
+                    wait_to_sample.append(i)
             n_scheduled = n_scheduled - 1 
 
     unload_model(state["model"].denoiser)
