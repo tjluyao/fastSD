@@ -285,6 +285,45 @@ def decode(model, samples_z, return_latents=False, filter=None):
                 if return_latents:
                     return samples, samples_z
                 return samples
+def refine(refiner, refine_process):
+    with torch.no_grad():
+        with autocast("cuda"):
+            with refiner.ema_scope():
+                        print('Start refining')
+                        input = refine_process[0].sample_z
+                        refine_dicts = []
+                        for i in refine_process:
+                            i.value_dict["orig_width"]: input.shape[3] * 8
+                            i.value_dict["orig_height"]: input.shape[2] * 8
+                            i.value_dict["target_width"]: input.shape[3] * 8
+                            i.value_dict["target_height"]: input.shape[2] * 8
+                            i.value_dict["crop_coords_top"] = 0
+                            i.value_dict["crop_coords_left"] = 0
+                            i.value_dict["aesthetic_score"] = 6.0
+                            i.value_dict["negative_aesthetic_score"] = 2.5
+                            refine_dicts.append(i.value_dict)
+                        pics = torch.cat([i.sample_z for i in refine_process],dim=0)
+                        randn, c, uc= get_condition_img(refiner,
+                                                        refine_dicts,
+                                                        pics,
+                                                        skip_encode=True,
+                                                        add_noise=not finish_denoising)
+
+                        def refine_denoiser(x, sigma, c):
+                            return refiner.denoiser(refiner.model, x, sigma, c)
+
+                        load_model(refiner.denoiser)
+                        load_model(refiner.model)
+                        samples_z = sampler2(refine_denoiser, randn, cond=c, uc=uc)
+                        unload_model(refiner.model)
+                        unload_model(refiner.denoiser)
+
+                        load_model(refiner.first_stage_model)
+                        samples_x = refiner.decode_first_stage(samples_z)
+                        unload_model(refiner.first_stage_model)
+                        samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
+                        perform_save_locally(output, samples)  #Save to local file
+                        print('Finish refinement ',refine_process)
 
 def collect_input():
     global wait_to_encode
@@ -338,51 +377,16 @@ def collect_batch():
                         wait_to_decode = []
                         samples_z = torch.cat([i.sampling['pic'] for i in decode_process], dim=0)
                         samples = decode(state["model"],samples_z)
-                        #perform_save_locally(output, samples)  #Save to local file
+                        perform_save_locally(output, samples)  #Save to local file
                         for i in decode_process:
                             print('Saved',i.id)
                             decode_process.remove(i)
                             del i
 
                     if wait_to_refine:
-                        refiner = state2['model']
-                        print('Start refining')
                         refine_process = wait_to_refine
                         wait_to_refine = []
-                        input = refine_process[0].sample_z
-                        refine_dicts = []
-                        for i in refine_process:
-                            i.value_dict["orig_width"]: input.shape[3] * 8
-                            i.value_dict["orig_height"]: input.shape[2] * 8
-                            i.value_dict["target_width"]: input.shape[3] * 8
-                            i.value_dict["target_height"]: input.shape[2] * 8
-                            i.value_dict["crop_coords_top"] = 0
-                            i.value_dict["crop_coords_left"] = 0
-                            i.value_dict["aesthetic_score"] = 6.0
-                            i.value_dict["negative_aesthetic_score"] = 2.5
-                            refine_dicts.append(i.value_dict)
-                        pics = torch.cat([i.sample_z for i in refine_process])
-                        randn, c, uc= get_condition_img(refiner,
-                                                        refine_dicts,
-                                                        pics,
-                                                        skip_encode=True,
-                                                        add_noise=not finish_denoising)
-
-                        def refine_denoiser(x, sigma, c):
-                            return refiner.denoiser(refiner.model, x, sigma, c)
-
-                        load_model(refiner.denoiser)
-                        load_model(refiner.model)
-                        samples_z = sampler2(refine_denoiser, randn, cond=c, uc=uc)
-                        unload_model(refiner.model)
-                        unload_model(refiner.denoiser)
-
-                        load_model(refiner.first_stage_model)
-                        samples_x = refiner.decode_first_stage(samples_z)
-                        unload_model(refiner.first_stage_model)
-                        samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
-                        perform_save_locally(output, samples)  #Save to local file
-                        print('Finish refinement ',refine_process)
+                        refine(state2['model'],refine_process)
                     time.sleep(10)
 
 max_bs = 3
@@ -475,7 +479,7 @@ if __name__ == '__main__':
         version_dict2 = VERSION2SPECS['SDXL-refiner-1.0']
         state2 = init_model(version_dict2, load_filter=False)
         stage2strength = 0.15 #[0.0,1.0]
-        sampler2 = init_sampling(key=2,img2img_strength=stage2strength,)
+        sampler2 = init_sampling(key=2,img2img_strength=stage2strength)
         finish_denoising = True #Finish denoising with refiner.
         if not finish_denoising:
             stage2strength = None
@@ -523,7 +527,8 @@ if __name__ == '__main__':
                     print('Finish sampling',i.id)
                     i.sample_z = i.sampling['pic']
                     if with_refiner:
-                        wait_to_refine.append(i)
+                        #wait_to_refine.append(i)
+                        refine(state2['model'],[i])
                     else:
                         wait_to_decode.append(i)
                 else:
