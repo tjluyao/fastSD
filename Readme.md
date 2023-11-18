@@ -11,5 +11,6 @@ Run Image to Image:
 Run Text to Image on batch:  
 `python txt2img_batch.py`  
 Run Text to Image on req_answer:  
-`python txt2img_req.py`  
-and text in the prompt one by one.  
+`python txt2img_req.py`  and text in the prompt one by one.  
+Run Text to Image on with refinement:
+`python fastSD.py` and Set`with_refine = True`  
