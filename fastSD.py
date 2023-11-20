@@ -280,12 +280,10 @@ def decode(model, samples_z, return_latents=False, filter=None):
                 if filter is not None:
                     samples = filter(samples)
 
-                grid = torch.stack([samples])
-                grid = rearrange(grid, "n b c h w -> (n h) (b w) c")
                 if return_latents:
                     return samples, samples_z
                 return samples
-def refine(refiner, refine_process):
+def refine(refiner, sampler, refine_process, filter=None):
     with torch.no_grad():
         with autocast("cuda"):
             with refiner.ema_scope():
@@ -293,19 +291,20 @@ def refine(refiner, refine_process):
                         input = refine_process[0].sample_z
                         refine_dicts = []
                         for i in refine_process:
-                            i.value_dict["orig_width"]: input.shape[3] * 8
-                            i.value_dict["orig_height"]: input.shape[2] * 8
-                            i.value_dict["target_width"]: input.shape[3] * 8
-                            i.value_dict["target_height"]: input.shape[2] * 8
+                            i.value_dict["orig_width"] = input.shape[3] * 8
+                            i.value_dict["orig_height"] = input.shape[2] * 8
+                            i.value_dict["target_width"] = input.shape[3] * 8
+                            i.value_dict["target_height"] = input.shape[2] * 8
                             i.value_dict["crop_coords_top"] = 0
                             i.value_dict["crop_coords_left"] = 0
                             i.value_dict["aesthetic_score"] = 6.0
                             i.value_dict["negative_aesthetic_score"] = 2.5
                             refine_dicts.append(i.value_dict)
-                        pics = torch.cat([i.sample_z for i in refine_process],dim=0)
+
+                        samples_z = torch.cat([i.sample_z for i in refine_process], dim=0)
                         randn, c, uc= get_condition_img(refiner,
                                                         refine_dicts,
-                                                        pics,
+                                                        samples_z,
                                                         skip_encode=True,
                                                         add_noise=not finish_denoising)
 
@@ -314,7 +313,7 @@ def refine(refiner, refine_process):
 
                         load_model(refiner.denoiser)
                         load_model(refiner.model)
-                        samples_z = sampler2(refine_denoiser, randn, cond=c, uc=uc)
+                        samples_z = sampler(refine_denoiser, randn, cond=c, uc=uc)
                         unload_model(refiner.model)
                         unload_model(refiner.denoiser)
 
@@ -322,8 +321,12 @@ def refine(refiner, refine_process):
                         samples_x = refiner.decode_first_stage(samples_z)
                         unload_model(refiner.first_stage_model)
                         samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
+
+                        if filter is not None:
+                            samples = filter(samples)
+                        print(samples.shape)
                         perform_save_locally(output, samples)  #Save to local file
-                        print('Finish refinement ',refine_process)
+                        print('Finish refinement ', refine_process)
 
 def collect_input():
     global wait_to_encode
@@ -376,7 +379,7 @@ def collect_batch():
                         decode_process = wait_to_decode
                         wait_to_decode = []
                         samples_z = torch.cat([i.sampling['pic'] for i in decode_process], dim=0)
-                        samples = decode(state["model"],samples_z)
+                        samples = decode(state["model"],samples_z,filter=state.get('filter'))
                         perform_save_locally(output, samples)  #Save to local file
                         for i in decode_process:
                             print('Saved',i.id)
@@ -386,7 +389,7 @@ def collect_batch():
                     if wait_to_refine:
                         refine_process = wait_to_refine
                         wait_to_refine = []
-                        refine(state2['model'],refine_process)
+                        refine(state2['model'],sampler2, refine_process)
                     time.sleep(10)
 
 max_bs = 3
@@ -456,7 +459,7 @@ if __name__ == '__main__':
     parser.add_argument('--version', type=str, default='SDXL-base-1.0', required=False)
     parser.add_argument('--sampler', type=str, default='EulerEDMSampler', required=False)
     parser.add_argument('--output', type=str, default='outputs/', required=False)
-    parser.add_argument('--seed', type=int, default=49, required=False)
+    parser.add_argument('--seed', type=int, default=42, required=False)
     parser.add_argument('--default_steps', type=int, default=30, required=False)
 
     args = parser.parse_args()
@@ -466,7 +469,6 @@ if __name__ == '__main__':
     output = args.output
     steps = args.default_steps
     with_refiner = True
-
     version_dict = VERSION2SPECS[version]
     seed_everything(seed)
     state = init_model(version_dict)
@@ -527,8 +529,9 @@ if __name__ == '__main__':
                     print('Finish sampling',i.id)
                     i.sample_z = i.sampling['pic']
                     if with_refiner:
+                        wait_to_decode.append(i)
                         #wait_to_refine.append(i)
-                        refine(state2['model'],[i])
+                        refine(state2['model'], sampler2, [i], filter=state2.get("filter"))
                     else:
                         wait_to_decode.append(i)
                 else:
