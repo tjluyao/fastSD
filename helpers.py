@@ -456,11 +456,10 @@ def do_sample(
                 num_samples = [num_samples]
 
                 load_model(model.conditioner)
-                batch, batch_uc = get_batch(
-                    model.conditioner,
-                    value_dict,
-                    num_samples,
-                )
+                if isinstance(value_dict['prompt'],str):
+                    batch, batch_uc = get_batch(model.conditioner,value_dict,num_samples,)
+                else:
+                    batch, batch_uc = get_batch_m(model.conditioner,value_dict,num_samples,)
 
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
@@ -511,8 +510,63 @@ def do_sample(
                     return samples, samples_z
                 return samples
 
-
 def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):
+    # Hardcoded demo setups; might undergo some changes in the future
+    keys = list(set([x.input_key for x in conditioner.embedders]))
+    batch = {}
+    batch_uc = {}
+
+    for key in keys:
+        if key == "txt":
+            batch["txt"] = (
+                np.repeat([value_dict["prompt"]], repeats=math.prod(N))
+                .reshape(N)
+                .tolist()
+            )
+            batch_uc["txt"] = (
+                np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N))
+                .reshape(N)
+                .tolist()
+            )
+        elif key == "original_size_as_tuple":
+            batch["original_size_as_tuple"] = (
+                torch.tensor([value_dict["orig_height"], value_dict["orig_width"]])
+                .to(device)
+                .repeat(*N, 1)
+            )
+        elif key == "crop_coords_top_left":
+            batch["crop_coords_top_left"] = (
+                torch.tensor(
+                    [value_dict["crop_coords_top"], value_dict["crop_coords_left"]]
+                )
+                .to(device)
+                .repeat(*N, 1)
+            )
+        elif key == "aesthetic_score":
+            batch["aesthetic_score"] = (
+                torch.tensor([value_dict["aesthetic_score"]]).to(device).repeat(*N, 1)
+            )
+            batch_uc["aesthetic_score"] = (
+                torch.tensor([value_dict["negative_aesthetic_score"]])
+                .to(device)
+                .repeat(*N, 1)
+            )
+
+        elif key == "target_size_as_tuple":
+            batch["target_size_as_tuple"] = (
+                torch.tensor([value_dict["target_height"], value_dict["target_width"]])
+                .to(device)
+                .repeat(*N, 1)
+            )
+        else:
+            batch[key] = value_dict[key]
+
+    for key in batch.keys():
+        if key not in batch_uc and isinstance(batch[key], torch.Tensor):
+            batch_uc[key] = torch.clone(batch[key])
+    return batch, batch_uc
+
+def get_batch_m(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):
     # Hardcoded demo setups; might undergo some changes in the future
     keys = list(set([x.input_key for x in conditioner.embedders]))
     batch = {}
