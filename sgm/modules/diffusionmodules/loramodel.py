@@ -87,7 +87,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
         x,
         emb,
         context=None,
-        lora_weights=None,
+        lora_dicts=None,
         skip_time_mix=False,
         time_context=None,
         num_video_frames=None,
@@ -98,7 +98,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             elif isinstance(layer, SpatialTransformerLoRA):
-                x = layer(x, context, lora_weights)
+                x = layer(x, context, lora_dicts)
             else:
                 x = layer(x)
         return x
@@ -976,7 +976,7 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps=None, context=None, y=None, lora_weights=None, **kwargs):
+    def forward(self, x, timesteps=None, context=None, y=None, lora_dicts=None, **kwargs):
         #print('Unet:',lora_weights)
         """
         Apply the model to an input batch.
@@ -1000,12 +1000,12 @@ class UNetModel(nn.Module):
         # h = x.type(self.dtype)
         h = x
         for module in self.input_blocks:
-            h = module(h, emb, context, lora_weights=lora_weights)
+            h = module(h, emb, context, lora_dicts=lora_dicts)
             hs.append(h)
-        h = self.middle_block(h, emb, context, lora_weights=lora_weights)
+        h = self.middle_block(h, emb, context, lora_dicts=lora_dicts)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, context, lora_weights=lora_weights)
+            h = module(h, emb, context, lora_dicts=lora_dicts)
         h = h.type(x.dtype)
         if self.predict_codebook_ids:
             assert False, "not supported anymore. what the f*** are you doing?"

@@ -44,6 +44,6 @@ class OpenAIWrapperLoRA(IdentityWrapper):
             timesteps=t,
             context=c.get("crossattn", None),
             y=c.get("vector", None),
-            lora_weights=lora_dicts,
+            lora_dicts=lora_dicts,
             **kwargs,
         )

@@ -633,18 +633,20 @@ class SpatialTransformer(nn.Module):
         return x + x_in
 
 #import loralib as lora 
-lora_rank = 8
-def search_lora_weights(name, lora_weights):
-    if lora_weights:
-            alpha = 'lora_'+ name + '.alpha'
-            lora_down = 'lora_' + name + '.lora_down.weight'
-            lora_up = 'lora_' + name + '.lora_up.weight'
-            alpha = lora_weights.get(alpha)
-            lora_down = lora_weights.get(lora_down)
-            lora_up = lora_weights.get(lora_up)
-            if alpha:
-                return alpha, lora_down, lora_up
-    return None, None, None
+def search_lora_weights(name, lora_dicts):
+    weights = lora_dicts['weights']
+    if weights:
+        alpha = 'lora_'+ name + '.alpha'
+        lora_down = 'lora_' + name + '.lora_down.weight'
+        lora_up = 'lora_' + name + '.lora_up.weight'
+        alpha = weights.get(alpha)
+        lora_down = weights.get(lora_down)
+        lora_up = weights.get(lora_up)
+        if alpha:
+            r = lora_dicts['rank']
+            return alpha, lora_down, lora_up, r
+    return None, None, None, None
+
 class SpatialTransformerLoRA(nn.Module):
     """
     Transformer block for image-like data.
@@ -730,9 +732,8 @@ class SpatialTransformerLoRA(nn.Module):
             self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
         self.proj_out_name = self.name + '_proj_out'
         self.use_linear = use_linear
-        self.r = lora_rank
 
-    def forward(self, x, context=None, lora_weights=None):
+    def forward(self, x, context=None, lora_dicts=None):
         # note: if no context is given, cross-attention defaults to self-attention
         if not isinstance(context, list):
             context = [context]
@@ -747,34 +748,34 @@ class SpatialTransformerLoRA(nn.Module):
         if self.use_linear:
             x = self.proj_in(x)
 
-        if lora_weights is not None:
+        if lora_dicts is not None:
             name = self.proj_in_name
             for i in range(x_copy.shape[0]):
-                alpha, lora_down, lora_up = search_lora_weights(name, lora_weights[i])
+                alpha, lora_down, lora_up, r = search_lora_weights(name, lora_dicts[i])
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
 
         for i, block in enumerate(self.transformer_blocks):
             if i > 0 and len(context) == 1:
                 i = 0  # use same context for each block
-            x = block(x, context=context[i], lora_weights=lora_weights)
+            x = block(x, context=context[i], lora_dicts=lora_dicts)
         
         x_copy = x.clone()
         if self.use_linear:
             x = self.proj_out(x)
 
-        if lora_weights is not None:
+        if lora_dicts is not None:
             name = self.proj_out_name
             for i in range(x.shape[0]):
-                alpha, lora_down, lora_up = search_lora_weights(name, lora_weights[i]) 
+                alpha, lora_down, lora_up, r = search_lora_weights(name, lora_dicts[i]) 
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
 
 
         x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
@@ -807,7 +808,6 @@ class MemoryEfficientCrossAttentionLoRA(nn.Module):
             nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
         )
         self.attention_op: Optional[Any] = None
-        self.r = lora_rank
         self.to_q_name = self.name + '_to_q'
         self.to_k_name = self.name + '_to_k'
         self.to_v_name = self.name + '_to_v'
@@ -817,7 +817,7 @@ class MemoryEfficientCrossAttentionLoRA(nn.Module):
         self,
         x,
         context=None,
-        lora_weights=None,
+        lora_dicts=None,
         mask=None,
         additional_tokens=None,
         n_times_crossframe_attn_in_self=0,
@@ -833,28 +833,28 @@ class MemoryEfficientCrossAttentionLoRA(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        if lora_weights is not None:
+        if lora_dicts is not None:
             for i in range(x.shape[0]):
-                alpha, lora_down, lora_up = search_lora_weights(self.to_q_name, lora_weights[i]) 
+                alpha, lora_down, lora_up, r = search_lora_weights(self.to_q_name, lora_dicts[i]) 
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    q[i] += (x[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    q[i] += (x[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
 
-                alpha, lora_down, lora_up = search_lora_weights(self.to_k_name, lora_weights[i]) 
+                alpha, lora_down, lora_up, r = search_lora_weights(self.to_k_name, lora_dicts[i]) 
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    k[i] += (context[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    k[i] += (context[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
 
-                alpha, lora_down, lora_up = search_lora_weights(self.to_v_name, lora_weights[i])
+                alpha, lora_down, lora_up, r = search_lora_weights(self.to_v_name, lora_dicts[i])
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    v[i] += (context[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    v[i] += (context[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
 
         if n_times_crossframe_attn_in_self:
             # reprogramming cross-frame attention as in https://arxiv.org/abs/2303.13439
@@ -901,35 +901,34 @@ class MemoryEfficientCrossAttentionLoRA(nn.Module):
         out_copy = out.clone()
         out = self.to_out(out)
 
-        if lora_weights is not None:
+        if lora_dicts is not None:
             for i in range(out.shape[0]):
-                alpha, lora_down, lora_up = search_lora_weights(self.to_out_name, lora_weights[i]) 
+                alpha, lora_down, lora_up, r = search_lora_weights(self.to_out_name, lora_dicts[i]) 
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    out[i] += (out_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    out[i] += (out_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
         return out
 
 class GEGLULoRA(nn.Module):
     def __init__(self, dim_in, dim_out, name=None):
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_out * 2)
-        self.r = lora_rank
         self.name = name
         self.proj_name = self.name + '_proj'
 
-    def forward(self, x, lora_weights=None):
-        if lora_weights is not None:
+    def forward(self, x, lora_dicts=None):
+        if lora_dicts is not None:
             x_copy = x.clone()
             x, gate = self.proj(x).chunk(2, dim=-1)
             for i in range(x.shape[0]):
-                alpha, lora_down, lora_up = search_lora_weights(self.proj_name, lora_weights[i]) 
+                alpha, lora_down, lora_up, r = search_lora_weights(self.proj_name, lora_dicts[i]) 
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    t = (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    t = (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
                     t1, t2 = t.chunk(2, dim=-1)
                     x[i] += t1
                     gate[i] += t2  
@@ -954,22 +953,21 @@ class FeedForwardLoRA(nn.Module):
         self.net = nn.Sequential(
             project_in, nn.Dropout(dropout), nn.Linear(inner_dim, dim_out)
         )
-        self.r = lora_rank
         
 
-    def forward(self, x, lora_weights=None):
-        if lora_weights:
+    def forward(self, x, lora_dicts=None):
+        if lora_dicts:
             x = self.net[0](x)
             x = self.net[1](x)
             x_copy = x.clone()
             x = self.net[2](x)
             for i in range(x.shape[0]):
-                alpha, lora_down, lora_up = search_lora_weights(self.out_name, lora_weights[i]) 
+                alpha, lora_down, lora_up, r = search_lora_weights(self.out_name, lora_dicts[i]) 
                 if alpha is not None:
                     alpha = alpha.to(x.device)
                     lora_down = lora_down.to(x.device)
                     lora_up = lora_up.to(x.device)
-                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / r)
         else:
             x = self.net(x)
         return x
@@ -1048,7 +1046,7 @@ class BasicTransformerBlockLoRA(nn.Module):
             print(f"{self.__class__.__name__} is using checkpointing")
 
     def forward(
-        self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0,lora_weights=None
+        self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0,lora_dicts=None
     ):
         kwargs = {"x": x}
 
@@ -1065,17 +1063,17 @@ class BasicTransformerBlockLoRA(nn.Module):
 
         # return mixed_checkpoint(self._forward, kwargs, self.parameters(), self.checkpoint)
         return checkpoint(
-            self._forward, (x, context, lora_weights), self.parameters(), self.checkpoint
+            self._forward, (x, context, lora_dicts), self.parameters(), self.checkpoint
         )
 
     def _forward(
-        self, x, context=None, lora_weights=None, additional_tokens=None, n_times_crossframe_attn_in_self=0
+        self, x, context=None, lora_dicts=None, additional_tokens=None, n_times_crossframe_attn_in_self=0
     ):
         x = (
             self.attn1(
                 self.norm1(x),
                 context=context if self.disable_self_attn else None,
-                lora_weights=lora_weights,
+                lora_dicts=lora_dicts,
                 additional_tokens=additional_tokens,
                 n_times_crossframe_attn_in_self=n_times_crossframe_attn_in_self
                 if not self.disable_self_attn
@@ -1085,10 +1083,10 @@ class BasicTransformerBlockLoRA(nn.Module):
         )
         x = (
             self.attn2(
-                self.norm2(x), context=context, lora_weights=lora_weights, additional_tokens=additional_tokens
+                self.norm2(x), context=context, lora_dicts=lora_dicts, additional_tokens=additional_tokens
             )
             + x
         )
         #x = self.ff(self.norm3(x)) + x
-        x = self.ff(self.norm3(x), lora_weights=lora_weights) + x
+        x = self.ff(self.norm3(x), lora_dicts=lora_dicts) + x
         return x

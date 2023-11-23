@@ -2,6 +2,7 @@ from pytorch_lightning import seed_everything
 from helpers import *
 from sgm.modules.diffusionmodules.sampling import *
 import time
+import peft
 import threading
 import argparse
 from safetensors.torch import load_file as load_safetensors
@@ -19,7 +20,7 @@ class request(object):
                  model: str='SDXL-base-1.0',
                  steps: int=30,
                  img_path: str=None,
-                 lora_dict: dict=None,
+                 lora_pth: str=None,
                  ) -> None:
         self.id = time.time()
         self.prompt = prompt
@@ -29,10 +30,20 @@ class request(object):
         self.value_dict = self.get_valuedict(model, prompt, n_prompt)
         self.sampling = {}
         self.sample_z = None
-        self.lora_dict = lora_dict
+        if lora_pth:
+            self.lora_dict= self.get_lora(lora_pth)
         if img_path:
             self.img, self.w, self.h = self.load_img(path=img_path, n=self.num)
         pass
+
+    def get_lora(self, lora_pth):
+        lora_dict = load_safetensors(lora_pth)
+        try:
+            rank = peft.LoraConfig.from_pretrained(lora_pth).r
+        except:
+            print('Rank not found')
+            rank = 8
+        return {'weights':lora_dict, 'rank':rank}
 
     def get_valuedict(self,model,prompt,negative_prompt):
         keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
@@ -349,12 +360,13 @@ def collect_input():
             req = request(prompt=user_input,
                         n_prompt='',
                         num=1,
-                        lora_dict=load_safetensors('lora_weights/pixel-art-xl.safetensors'),
+                        lora_pth='lora_weights/pixel-art-xl.safetensors',
                         )
             wait_to_encode.append(req)
             req2 = request(prompt=user_input,
                         n_prompt='',
                         num=1,
+                        lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
                         )
             wait_to_encode.append(req2)
 
