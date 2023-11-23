@@ -58,6 +58,11 @@ class BaseDiffusionSampler:
         denoised = denoiser(*self.guider.prepare_inputs(x, sigma, cond, uc))
         denoised = self.guider(denoised, sigma)
         return denoised
+    
+    def denoise_lora(self, x, denoiser, sigma, cond, uc, lora_dicts=None):
+        denoised = denoiser(*self.guider.prepare_inputs_lora(x, sigma, cond, uc, lora_dicts=lora_dicts))
+        denoised = self.guider(denoised, sigma)
+        return denoised
 
     def get_sigma_gen(self, num_sigmas):
         sigma_generator = range(num_sigmas - 1)
@@ -111,6 +116,17 @@ class EDMSampler(SingleStepDiffusionSampler):
     
     def sampler_step_g(self, sigma, next_sigma, denoiser, x, cond, uc=None):
         denoised = self.denoise(x, denoiser, sigma, cond, uc)
+        d = to_d(x, sigma, denoised)
+        dt = append_dims(next_sigma - sigma, x.ndim)
+
+        euler_step = self.euler_step(x, d, dt)
+        x = self.possible_correction_step(
+            euler_step, x, d, dt, next_sigma, denoiser, cond, uc
+        )
+        return x
+    
+    def sampler_step_lora(self, sigma, next_sigma, denoiser, x, cond, uc=None, lora_dicts=None):
+        denoised = self.denoise_lora(x, denoiser, sigma, cond, uc, lora_dicts)
         d = to_d(x, sigma, denoised)
         dt = append_dims(next_sigma - sigma, x.ndim)
 

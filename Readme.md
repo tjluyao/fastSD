@@ -8,6 +8,9 @@ and then move the file `.safetensor` to the folder `./checkpoints`
 Test inference with fastSD:    
 `python fastSD.py` and text in the prompt one by one.    
 
+Test inference with fastSD on Multiple-LoRA:    
+`python fastSD_lora.py` and text in the prompt one by one, remember to set `with_refine = False`    
+
 Other test scripts:  
 Run Text to Image:  
 `python txt2img.py --prompt <str>`   

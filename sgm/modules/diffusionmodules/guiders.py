@@ -38,6 +38,17 @@ class VanillaCFG:
                 assert c[k] == uc[k]
                 c_out[k] = c[k]
         return torch.cat([x] * 2), torch.cat([s] * 2), c_out
+    
+    def prepare_inputs_lora(self, x, s, c, uc, lora_dicts):
+        c_out = dict()
+
+        for k in c:
+            if k in ["vector", "crossattn", "concat"]:
+                c_out[k] = torch.cat((uc[k], c[k]), 0)
+            else:
+                assert c[k] == uc[k]
+                c_out[k] = c[k]
+        return torch.cat([x] * 2), torch.cat([s] * 2), c_out, lora_dicts
 
 
 class IdentityGuider:

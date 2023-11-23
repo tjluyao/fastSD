@@ -631,3 +631,464 @@ class SpatialTransformer(nn.Module):
         if not self.use_linear:
             x = self.proj_out(x)
         return x + x_in
+
+#import loralib as lora 
+lora_rank = 8
+def search_lora_weights(name, lora_weights):
+    if lora_weights:
+            alpha = 'lora_'+ name + '.alpha'
+            lora_down = 'lora_' + name + '.lora_down.weight'
+            lora_up = 'lora_' + name + '.lora_up.weight'
+            alpha = lora_weights.get(alpha)
+            lora_down = lora_weights.get(lora_down)
+            lora_up = lora_weights.get(lora_up)
+            if alpha:
+                return alpha, lora_down, lora_up
+    return None, None, None
+class SpatialTransformerLoRA(nn.Module):
+    """
+    Transformer block for image-like data.
+    First, project the input (aka embedding)
+    and reshape to b, t, d.
+    Then apply standard transformer action.
+    Finally, reshape to image
+    NEW: use_linear for more efficiency instead of the 1x1 convs
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        n_heads,
+        d_head,
+        depth=1,
+        dropout=0.0,
+        context_dim=None,
+        disable_self_attn=False,
+        use_linear=False,
+        attn_type="softmax",
+        use_checkpoint=True,
+        # sdp_backend=SDPBackend.FLASH_ATTENTION
+        sdp_backend=None,
+        name = None,
+    ):
+        super().__init__()
+        self.name = name
+        print(
+            f"constructing {self.__class__.__name__} of depth {depth} w/ {in_channels} channels and {n_heads} heads"
+        )
+        from omegaconf import ListConfig
+
+        if exists(context_dim) and not isinstance(context_dim, (list, ListConfig)):
+            context_dim = [context_dim]
+        if exists(context_dim) and isinstance(context_dim, list):
+            if depth != len(context_dim):
+                print(
+                    f"WARNING: {self.__class__.__name__}: Found context dims {context_dim} of depth {len(context_dim)}, "
+                    f"which does not match the specified 'depth' of {depth}. Setting context_dim to {depth * [context_dim[0]]} now."
+                )
+                # depth does not match context dims.
+                assert all(
+                    map(lambda x: x == context_dim[0], context_dim)
+                ), "need homogenous context_dim to match depth automatically"
+                context_dim = depth * [context_dim[0]]
+        elif context_dim is None:
+            context_dim = [None] * depth
+        self.in_channels = in_channels
+        inner_dim = n_heads * d_head
+        self.norm = Normalize(in_channels)
+        if not use_linear:
+            self.proj_in = nn.Conv2d(
+                in_channels, inner_dim, kernel_size=1, stride=1, padding=0
+            )
+        else:
+            self.proj_in = nn.Linear(in_channels, inner_dim)
+        self.proj_in_name = self.name + '_proj_in'
+
+        self.transformer_blocks = nn.ModuleList(
+            [
+                BasicTransformerBlockLoRA(
+                    inner_dim,
+                    n_heads,
+                    d_head,
+                    dropout=dropout,
+                    context_dim=context_dim[d],
+                    disable_self_attn=disable_self_attn,
+                    attn_mode=attn_type,
+                    checkpoint=use_checkpoint,
+                    sdp_backend=sdp_backend,
+                    name = self.name + '_transformer_blocks_' + str(d),
+                )
+                for d in range(depth)
+            ]
+        )
+        if not use_linear:
+            self.proj_out = zero_module(
+                nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0)
+            )
+        else:
+            # self.proj_out = zero_module(nn.Linear(in_channels, inner_dim))
+            self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
+        self.proj_out_name = self.name + '_proj_out'
+        self.use_linear = use_linear
+        self.r = lora_rank
+
+    def forward(self, x, context=None, lora_weights=None):
+        # note: if no context is given, cross-attention defaults to self-attention
+        if not isinstance(context, list):
+            context = [context]
+        b, c, h, w = x.shape
+        x_in = x
+        x = self.norm(x)
+         
+        if not self.use_linear:
+            x = self.proj_in(x)
+        x = rearrange(x, "b c h w -> b (h w) c").contiguous()
+        x_copy = x.clone() 
+        if self.use_linear:
+            x = self.proj_in(x)
+
+        if lora_weights is not None:
+            name = self.proj_in_name
+            for i in range(x_copy.shape[0]):
+                alpha, lora_down, lora_up = search_lora_weights(name, lora_weights[i])
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+
+        for i, block in enumerate(self.transformer_blocks):
+            if i > 0 and len(context) == 1:
+                i = 0  # use same context for each block
+            x = block(x, context=context[i], lora_weights=lora_weights)
+        
+        x_copy = x.clone()
+        if self.use_linear:
+            x = self.proj_out(x)
+
+        if lora_weights is not None:
+            name = self.proj_out_name
+            for i in range(x.shape[0]):
+                alpha, lora_down, lora_up = search_lora_weights(name, lora_weights[i]) 
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+
+
+        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
+        if not self.use_linear:
+            x = self.proj_out(x)
+        return x + x_in
+
+class MemoryEfficientCrossAttentionLoRA(nn.Module):
+    # https://github.com/MatthieuTPHR/diffusers/blob/d80b531ff8060ec1ea982b65a1b8df70f73aa67c/src/diffusers/models/attention.py#L223
+    def __init__(
+        self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0, name=None, **kwargs
+    ):
+        super().__init__()
+        self.name = name
+        print(
+            f"Setting up {self.__class__.__name__}. Query dim is {query_dim}, context_dim is {context_dim} and using "
+            f"{heads} heads with a dimension of {dim_head}."
+        )
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim, query_dim)
+
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
+        )
+        self.attention_op: Optional[Any] = None
+        self.r = lora_rank
+        self.to_q_name = self.name + '_to_q'
+        self.to_k_name = self.name + '_to_k'
+        self.to_v_name = self.name + '_to_v'
+        self.to_out_name = self.name + '_to_out'
+
+    def forward(
+        self,
+        x,
+        context=None,
+        lora_weights=None,
+        mask=None,
+        additional_tokens=None,
+        n_times_crossframe_attn_in_self=0,
+    ):
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            # add additional token
+            x = torch.cat([additional_tokens, x], dim=1)
+
+        q = self.to_q(x)
+        context = default(context, x)
+        k = self.to_k(context)
+        v = self.to_v(context)
+
+        if lora_weights is not None:
+            for i in range(x.shape[0]):
+                alpha, lora_down, lora_up = search_lora_weights(self.to_q_name, lora_weights[i]) 
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    q[i] += (x[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+
+                alpha, lora_down, lora_up = search_lora_weights(self.to_k_name, lora_weights[i]) 
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    k[i] += (context[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+
+                alpha, lora_down, lora_up = search_lora_weights(self.to_v_name, lora_weights[i])
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    v[i] += (context[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+
+        if n_times_crossframe_attn_in_self:
+            # reprogramming cross-frame attention as in https://arxiv.org/abs/2303.13439
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            # n_cp = x.shape[0]//n_times_crossframe_attn_in_self
+            k = repeat(
+                k[::n_times_crossframe_attn_in_self],
+                "b ... -> (b n) ...",
+                n=n_times_crossframe_attn_in_self,
+            )
+            v = repeat(
+                v[::n_times_crossframe_attn_in_self],
+                "b ... -> (b n) ...",
+                n=n_times_crossframe_attn_in_self,
+            )
+
+        b, _, _ = q.shape
+        q, k, v = map(
+            lambda t: t.unsqueeze(3)
+            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b * self.heads, t.shape[1], self.dim_head)
+            .contiguous(),
+            (q, k, v),
+        )
+
+        # actually compute the attention, what we cannot get enough of
+        out = xformers.ops.memory_efficient_attention(
+            q, k, v, attn_bias=None, op=self.attention_op
+        )
+
+        # TODO: Use this directly in the attention operation, as a bias
+        if exists(mask):
+            raise NotImplementedError
+        out = (
+            out.unsqueeze(0)
+            .reshape(b, self.heads, out.shape[1], self.dim_head)
+            .permute(0, 2, 1, 3)
+            .reshape(b, out.shape[1], self.heads * self.dim_head)
+        )
+        if additional_tokens is not None:
+            # remove additional token
+            out = out[:, n_tokens_to_mask:]
+        out_copy = out.clone()
+        out = self.to_out(out)
+
+        if lora_weights is not None:
+            for i in range(out.shape[0]):
+                alpha, lora_down, lora_up = search_lora_weights(self.to_out_name, lora_weights[i]) 
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    out[i] += (out_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+        return out
+
+class GEGLULoRA(nn.Module):
+    def __init__(self, dim_in, dim_out, name=None):
+        super().__init__()
+        self.proj = nn.Linear(dim_in, dim_out * 2)
+        self.r = lora_rank
+        self.name = name
+        self.proj_name = self.name + '_proj'
+
+    def forward(self, x, lora_weights=None):
+        if lora_weights is not None:
+            x_copy = x.clone()
+            x, gate = self.proj(x).chunk(2, dim=-1)
+            for i in range(x.shape[0]):
+                alpha, lora_down, lora_up = search_lora_weights(self.proj_name, lora_weights[i]) 
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    t = (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+                    t1, t2 = t.chunk(2, dim=-1)
+                    x[i] += t1
+                    gate[i] += t2  
+        else:
+            x, gate = self.proj(x).chunk(2, dim=-1)
+        return x * F.gelu(gate)
+
+
+class FeedForwardLoRA(nn.Module):
+    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.0, name=None):
+        super().__init__()
+        self.name = name
+        self.out_name = self.name + '_net_2'
+        inner_dim = int(dim * mult)
+        dim_out = default(dim_out, dim)
+        project_in = (
+            nn.Sequential(nn.Linear(dim, inner_dim), nn.GELU())
+            if not glu
+            else GEGLULoRA(dim, inner_dim, name=self.name + '_net_0')
+        )
+
+        self.net = nn.Sequential(
+            project_in, nn.Dropout(dropout), nn.Linear(inner_dim, dim_out)
+        )
+        self.r = lora_rank
+        
+
+    def forward(self, x, lora_weights=None):
+        if lora_weights:
+            x = self.net[0](x)
+            x = self.net[1](x)
+            x_copy = x.clone()
+            x = self.net[2](x)
+            for i in range(x.shape[0]):
+                alpha, lora_down, lora_up = search_lora_weights(self.out_name, lora_weights[i]) 
+                if alpha is not None:
+                    alpha = alpha.to(x.device)
+                    lora_down = lora_down.to(x.device)
+                    lora_up = lora_up.to(x.device)
+                    x[i] += (x_copy[i] @ lora_down.transpose(0, 1) @ lora_up.transpose(0, 1)) * (alpha / self.r)
+        else:
+            x = self.net(x)
+        return x
+    
+class BasicTransformerBlockLoRA(nn.Module):
+    ATTENTION_MODES = {
+        "softmax": CrossAttention,  # vanilla attention
+        "softmax-xformers": MemoryEfficientCrossAttentionLoRA,  # ampere
+    }
+
+    def __init__(
+        self,
+        dim,
+        n_heads,
+        d_head,
+        dropout=0.0,
+        context_dim=None,
+        gated_ff=True,
+        checkpoint=True,
+        disable_self_attn=False,
+        attn_mode="softmax",
+        sdp_backend=None,
+        name=None,
+    ):
+        super().__init__()
+        self.name = name
+        assert attn_mode in self.ATTENTION_MODES
+        if attn_mode != "softmax" and not XFORMERS_IS_AVAILABLE:
+            print(
+                f"Attention mode '{attn_mode}' is not available. Falling back to native attention. "
+                f"This is not a problem in Pytorch >= 2.0. FYI, you are running with PyTorch version {torch.__version__}"
+            )
+            attn_mode = "softmax"
+        elif attn_mode == "softmax" and not SDP_IS_AVAILABLE:
+            print(
+                "We do not support vanilla attention anymore, as it is too expensive. Sorry."
+            )
+            if not XFORMERS_IS_AVAILABLE:
+                assert (
+                    False
+                ), "Please install xformers via e.g. 'pip install xformers==0.0.16'"
+            else:
+                print("Falling back to xformers efficient attention.")
+                attn_mode = "softmax-xformers"
+        attn_cls = self.ATTENTION_MODES[attn_mode]
+        if version.parse(torch.__version__) >= version.parse("2.0.0"):
+            assert sdp_backend is None or isinstance(sdp_backend, SDPBackend)
+        else:
+            assert sdp_backend is None
+        self.disable_self_attn = disable_self_attn
+        self.attn1 = attn_cls(
+            query_dim=dim,
+            heads=n_heads,
+            dim_head=d_head,
+            dropout=dropout,
+            context_dim=context_dim if self.disable_self_attn else None,
+            backend=sdp_backend,
+            name = self.name + '_attn1',
+        )  # is a self-attention if not self.disable_self_attn
+        #self.ff = FeedForward(dim, dropout=dropout, glu=gated_ff)
+        self.ff = FeedForwardLoRA(dim, dropout=dropout, glu=gated_ff, name = self.name + '_ff')
+        self.attn2 = attn_cls(
+            query_dim=dim,
+            context_dim=context_dim,
+            heads=n_heads,
+            dim_head=d_head,
+            dropout=dropout,
+            backend=sdp_backend,
+            name = self.name + '_attn2',
+        )  # is self-attn if context is none
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.norm3 = nn.LayerNorm(dim)
+        self.checkpoint = checkpoint
+        if self.checkpoint:
+            print(f"{self.__class__.__name__} is using checkpointing")
+
+    def forward(
+        self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0,lora_weights=None
+    ):
+        kwargs = {"x": x}
+
+        if context is not None:
+            kwargs.update({"context": context})
+
+        if additional_tokens is not None:
+            kwargs.update({"additional_tokens": additional_tokens})
+
+        if n_times_crossframe_attn_in_self:
+            kwargs.update(
+                {"n_times_crossframe_attn_in_self": n_times_crossframe_attn_in_self}
+            )
+
+        # return mixed_checkpoint(self._forward, kwargs, self.parameters(), self.checkpoint)
+        return checkpoint(
+            self._forward, (x, context, lora_weights), self.parameters(), self.checkpoint
+        )
+
+    def _forward(
+        self, x, context=None, lora_weights=None, additional_tokens=None, n_times_crossframe_attn_in_self=0
+    ):
+        x = (
+            self.attn1(
+                self.norm1(x),
+                context=context if self.disable_self_attn else None,
+                lora_weights=lora_weights,
+                additional_tokens=additional_tokens,
+                n_times_crossframe_attn_in_self=n_times_crossframe_attn_in_self
+                if not self.disable_self_attn
+                else 0,
+            )
+            + x
+        )
+        x = (
+            self.attn2(
+                self.norm2(x), context=context, lora_weights=lora_weights, additional_tokens=additional_tokens
+            )
+            + x
+        )
+        #x = self.ff(self.norm3(x)) + x
+        x = self.ff(self.norm3(x), lora_weights=lora_weights) + x
+        return x

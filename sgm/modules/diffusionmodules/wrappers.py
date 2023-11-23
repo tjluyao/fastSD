@@ -3,6 +3,7 @@ import torch.nn as nn
 from packaging import version
 
 OPENAIUNETWRAPPER = "sgm.modules.diffusionmodules.wrappers.OpenAIWrapper"
+OPENAIUNETWRAPPERLORA = "sgm.modules.diffusionmodules.wrappers.OpenAIWrapperLoRA"
 
 
 class IdentityWrapper(nn.Module):
@@ -30,5 +31,19 @@ class OpenAIWrapper(IdentityWrapper):
             timesteps=t,
             context=c.get("crossattn", None),
             y=c.get("vector", None),
+            **kwargs,
+        )
+
+class OpenAIWrapperLoRA(IdentityWrapper):
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: dict, lora_dicts,**kwargs
+    ) -> torch.Tensor:
+        x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
+        return self.diffusion_model(
+            x,
+            timesteps=t,
+            context=c.get("crossattn", None),
+            y=c.get("vector", None),
+            lora_weights=lora_dicts,
             **kwargs,
         )

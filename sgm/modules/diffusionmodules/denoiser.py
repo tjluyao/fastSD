@@ -27,6 +27,14 @@ class Denoiser(nn.Module):
         c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
         return network(input * c_in, c_noise, cond) * c_out + input * c_skip
 
+    def run_with_lora(self, network, input, sigma, cond, lora_dicts):
+        sigma = self.possibly_quantize_sigma(sigma)
+        sigma_shape = sigma.shape
+        sigma = append_dims(sigma, input.ndim)
+        c_skip, c_out, c_in, c_noise = self.scaling(sigma)
+        c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
+        return network(input * c_in, c_noise, cond, lora_dicts) * c_out + input * c_skip
+
 
 class DiscreteDenoiser(Denoiser):
     def __init__(

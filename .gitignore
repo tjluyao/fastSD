@@ -13,3 +13,6 @@
 /outputs
 /build
 /src
+
+# weights
+/lora_weights/*
