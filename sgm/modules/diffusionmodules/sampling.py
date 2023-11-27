@@ -9,13 +9,10 @@ import torch
 from omegaconf import ListConfig, OmegaConf
 from tqdm import tqdm
 
-from ...modules.diffusionmodules.sampling_utils import (
-    get_ancestral_step,
-    linear_multistep_coeff,
-    to_d,
-    to_neg_log_sigma,
-    to_sigma,
-)
+from ...modules.diffusionmodules.sampling_utils import (get_ancestral_step,
+                                                        linear_multistep_coeff,
+                                                        to_d, to_neg_log_sigma,
+                                                        to_sigma)
 from ...util import append_dims, default, instantiate_from_config
 
 DEFAULT_GUIDER = {"target": "sgm.modules.diffusionmodules.guiders.IdentityGuider"}
@@ -56,11 +53,6 @@ class BaseDiffusionSampler:
 
     def denoise(self, x, denoiser, sigma, cond, uc):
         denoised = denoiser(*self.guider.prepare_inputs(x, sigma, cond, uc))
-        denoised = self.guider(denoised, sigma)
-        return denoised
-    
-    def denoise_lora(self, x, denoiser, sigma, cond, uc, lora_dicts=None):
-        denoised = denoiser(*self.guider.prepare_inputs_lora(x, sigma, cond, uc, lora_dicts=lora_dicts))
         denoised = self.guider(denoised, sigma)
         return denoised
 
@@ -107,28 +99,6 @@ class EDMSampler(SingleStepDiffusionSampler):
         denoised = self.denoise(x, denoiser, sigma_hat, cond, uc)
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)
-
-        euler_step = self.euler_step(x, d, dt)
-        x = self.possible_correction_step(
-            euler_step, x, d, dt, next_sigma, denoiser, cond, uc
-        )
-        return x
-    
-    def sampler_step_g(self, sigma, next_sigma, denoiser, x, cond, uc=None):
-        denoised = self.denoise(x, denoiser, sigma, cond, uc)
-        d = to_d(x, sigma, denoised)
-        dt = append_dims(next_sigma - sigma, x.ndim)
-
-        euler_step = self.euler_step(x, d, dt)
-        x = self.possible_correction_step(
-            euler_step, x, d, dt, next_sigma, denoiser, cond, uc
-        )
-        return x
-    
-    def sampler_step_lora(self, sigma, next_sigma, denoiser, x, cond, uc=None, lora_dicts=None):
-        denoised = self.denoise_lora(x, denoiser, sigma, cond, uc, lora_dicts)
-        d = to_d(x, sigma, denoised)
-        dt = append_dims(next_sigma - sigma, x.ndim)
 
         euler_step = self.euler_step(x, d, dt)
         x = self.possible_correction_step(

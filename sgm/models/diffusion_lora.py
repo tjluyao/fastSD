@@ -7,9 +7,9 @@ from omegaconf import ListConfig, OmegaConf
 from safetensors.torch import load_file as load_safetensors
 from torch.optim.lr_scheduler import LambdaLR
 
-from ..modules import UNCONDITIONAL_CONFIG
-from ..modules.diffusionmodules.wrappers import OPENAIUNETWRAPPERLORA
-from ..modules.ema import LitEma
+from ..modules_lora import UNCONDITIONAL_CONFIG
+from ..modules_lora.diffusionmodules.wrappers import OPENAIUNETWRAPPERLORA
+from ..modules_lora.ema import LitEma
 from ..util import (
     default,
     disabled_train,
