@@ -9,10 +9,8 @@
 # directories
 /checkpoints
 /dist
-/inputs
 /outputs
 /build
 /src
-
-# weights
-/lora_weights/*
+/lora_weights
+/inputs

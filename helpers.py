@@ -324,8 +324,8 @@ def get_discretization(discretization, key=1):
 
 def get_sampler(sampler_name, steps, discretization_config, guider_config, key=1):
     if sampler_name == "EulerEDMSampler" or sampler_name == "HeunEDMSampler":
-        s_churn = 0
-        s_tmin = 0
+        s_churn = 0.0
+        s_tmin = 0.0
         s_tmax = 999.0
         s_noise = 1.0
 

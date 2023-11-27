@@ -471,7 +471,7 @@ if __name__ == '__main__':
     seed = args.seed
     output = args.output
     steps = args.default_steps
-    with_refiner = True
+    with_refiner = False
     version_dict = VERSION2SPECS[version]
     seed_everything(seed)
     state = init_model(version_dict)
