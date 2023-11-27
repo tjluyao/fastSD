@@ -85,7 +85,7 @@ VERSION2SPECS = {
         "f": 8,
         "is_legacy": False,
         "config": "configs/inference/sd_xl_lora.yaml",
-        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+        "ckpt": "/root/fastSD/checkpoints/sd_xl_base_1.0.safetensors",
     },
     "SDXL-base-1.0": {
         "H": 1024,
@@ -360,13 +360,13 @@ def collect_input():
             req = request(prompt=user_input,
                         n_prompt='',
                         num=1,
-                        lora_pth='lora_weights/pixel-art-xl.safetensors',
+                        lora_pth='/root/fastSD/lora_weights/pixel-art-xl.safetensors',
                         )
             wait_to_encode.append(req)
             req2 = request(prompt=user_input,
                         n_prompt='',
                         num=1,
-                        lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
+                        lora_pth='/root/fastSD/lora_weights/EnvySpeedPaintXL01v11.safetensors',
                         )
             wait_to_encode.append(req2)
 
