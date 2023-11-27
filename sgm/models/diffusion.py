@@ -8,17 +8,10 @@ from omegaconf import ListConfig, OmegaConf
 from safetensors.torch import load_file as load_safetensors
 from torch.optim.lr_scheduler import LambdaLR
 
-<<<<<<< HEAD
 from ..modules import UNCONDITIONAL_CONFIG
 from ..modules.autoencoding.temporal_ae import VideoDecoder
 from ..modules.diffusionmodules.wrappers import OPENAIUNETWRAPPER
 from ..modules.ema import LitEma
-=======
-from ..modules_lora import UNCONDITIONAL_CONFIG
-from ..modules_lora.autoencoding.temporal_ae import VideoDecoder
-from ..modules_lora.diffusionmodules.wrappers import OPENAIUNETWRAPPER
-from ..modules_lora.ema import LitEma
->>>>>>> 528b38519088c988d755c750bb71831266058e6f
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
 

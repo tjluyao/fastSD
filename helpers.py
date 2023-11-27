@@ -15,7 +15,7 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 
 from scripts.util.detection.nsfw_and_watermark_dectection import DeepFloydDataFiltering
-from sgm.modules_lora.diffusionmodules.sampling import (
+from sgm.modules.diffusionmodules.sampling import (
     DPMPP2MSampler,
     DPMPP2SAncestralSampler,
     EulerAncestralSampler,

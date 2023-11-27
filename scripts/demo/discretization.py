@@ -1,10 +1,6 @@
 import torch
 
-<<<<<<< HEAD
 from sgm.modules.diffusionmodules.discretizer import Discretization
-=======
-from sgm.modules_lora.diffusionmodules.discretizer import Discretization
->>>>>>> 528b38519088c988d755c750bb71831266058e6f
 
 
 class Img2ImgDiscretizationWrapper:

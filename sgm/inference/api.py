@@ -7,11 +7,7 @@ from omegaconf import OmegaConf
 
 from sgm.inference.helpers import (Img2ImgDiscretizationWrapper, do_img2img,
                                    do_sample)
-<<<<<<< HEAD
 from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
-=======
-from sgm.modules_lora.diffusionmodules.sampling import (DPMPP2MSampler,
->>>>>>> 528b38519088c988d755c750bb71831266058e6f
                                                    DPMPP2SAncestralSampler,
                                                    EulerAncestralSampler,
                                                    EulerEDMSampler,
