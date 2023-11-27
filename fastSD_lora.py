@@ -2,8 +2,10 @@ from pytorch_lightning import seed_everything
 from helpers import *
 from sgm.modules_lora.diffusionmodules.sampling import *
 import time
+import peft
 import threading
 import argparse
+from safetensors.torch import load_file as load_safetensors
 
 wait_to_encode = []
 wait_to_sample = []
@@ -18,6 +20,7 @@ class request(object):
                  model: str='SDXL-base-1.0',
                  steps: int=30,
                  img_path: str=None,
+                 lora_pth: str=None,
                  ) -> None:
         self.id = time.time()
         self.prompt = prompt
@@ -27,9 +30,20 @@ class request(object):
         self.value_dict = self.get_valuedict(model, prompt, n_prompt)
         self.sampling = {}
         self.sample_z = None
+        if lora_pth:
+            self.lora_dict= self.get_lora(lora_pth)
         if img_path:
             self.img, self.w, self.h = self.load_img(path=img_path, n=self.num)
         pass
+
+    def get_lora(self, lora_pth):
+        lora_dict = load_safetensors(lora_pth)
+        try:
+            rank = peft.LoraConfig.from_pretrained(lora_pth).r
+        except:
+            print('Rank not found')
+            rank = 8
+        return {'weights':lora_dict, 'rank':rank}
 
     def get_valuedict(self,model,prompt,negative_prompt):
         keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
@@ -64,6 +78,15 @@ class request(object):
         return image.to(device),w ,h 
 
 VERSION2SPECS = {
+    "SDXL-lora-1.0": {
+        "H": 1024,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "is_legacy": False,
+        "config": "configs/inference/sd_xl_lora.yaml",
+        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+    },
     "SDXL-base-1.0": {
         "H": 1024,
         "W": 1024,
@@ -336,9 +359,16 @@ def collect_input():
         if user_input != '\n':
             req = request(prompt=user_input,
                         n_prompt='',
-                        num=2,
+                        num=1,
+                        lora_pth='lora_weights/pixel-art-xl.safetensors',
                         )
             wait_to_encode.append(req)
+            req2 = request(prompt=user_input,
+                        n_prompt='',
+                        num=1,
+                        lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
+                        )
+            wait_to_encode.append(req2)
 
 def collect_batch(img_batch=False,sampler=None):
     global wait_to_encode
@@ -447,8 +477,12 @@ def sample(sampling):
                         for key in dict_list[0]:
                             uc[key] = torch.cat([d[key] for d in dict_list], dim=0)
                         
-                        samples = sampler.sampler_step_g(begin,end,denoiser,x,cond,uc) if isinstance(sampler, EDMSampler) else sampler.sampler_step(begin,end,denoiser,x,cond,uc)
-                                    
+                        lora_dicts = [d.lora_dict for d in sampling] * 2 
+                        
+                        def denoiser(input, sigma, c, lora_dicts):
+                            return state["model"].denoiser.run_with_lora(state["model"].model, input, sigma, c, lora_dicts)
+                        samples = sampler.sampler_step_lora(begin,end,denoiser,x,cond,uc, lora_dicts)
+                        
                         t = 0
                         for i in sampling:
                             i.sampling['pic'] = samples[t:t+i.num]
@@ -459,7 +493,7 @@ def sample(sampling):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Demo of argparse')
-    parser.add_argument('--version', type=str, default='SDXL-base-1.0', required=False)
+    parser.add_argument('--version', type=str, default='SDXL-lora-1.0', required=False)
     parser.add_argument('--sampler', type=str, default='EulerEDMSampler', required=False)
     parser.add_argument('--output', type=str, default='outputs/', required=False)
     parser.add_argument('--seed', type=int, default=42, required=False)
@@ -504,9 +538,6 @@ if __name__ == '__main__':
     batch_thread = threading.Thread(target=collect_batch, args=(False,sampler))
     batch_thread.daemon = True
     batch_thread.start()
-
-    def denoiser(input, sigma, c):
-        return state["model"].denoiser(state["model"].model, input, sigma, c)
 
     load_model(state["model"].denoiser)
     load_model(state["model"].model)

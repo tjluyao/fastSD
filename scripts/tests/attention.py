@@ -4,7 +4,11 @@ import torch.nn.functional as F
 import torch.utils.benchmark as benchmark
 from torch.backends.cuda import SDPBackend
 
+<<<<<<< HEAD
 from sgm.modules.attention import BasicTransformerBlock, SpatialTransformer
+=======
+from sgm.modules_lora.attention import BasicTransformerBlock, SpatialTransformer
+>>>>>>> 528b38519088c988d755c750bb71831266058e6f
 
 
 def benchmark_attn():

@@ -1,7 +1,6 @@
 import math
 import os
 from typing import List, Union
-import time
 
 import numpy as np
 import torch
@@ -138,8 +137,9 @@ def unload_model(model):
         model.cpu()
         torch.cuda.empty_cache()
 
-def init_embedder_options(keys, init_dict, prompt=None, negative_prompt=None):
+def init_embedder_options(conditioner, init_dict, prompt=None, negative_prompt=None):
     # Hardcoded demo settings; might undergo some changes in the future
+    keys = list(set([x.input_key for x in conditioner.embedders]))
     value_dict = {}
     for key in keys:
         if key == "txt":
@@ -203,12 +203,12 @@ class Img2ImgDiscretizationWrapper:
     def __call__(self, *args, **kwargs):
         # sigmas start large first, and decrease then
         sigmas = self.discretization(*args, **kwargs)
-        #print(f"sigmas after discretization, before pruning img2img: ", sigmas)
+        print(f"sigmas after discretization, before pruning img2img: ", sigmas)
         sigmas = torch.flip(sigmas, (0,))
         sigmas = sigmas[: max(int(self.strength * len(sigmas)), 1)]
-        #print("prune index:", max(int(self.strength * len(sigmas)), 1))
+        print("prune index:", max(int(self.strength * len(sigmas)), 1))
         sigmas = torch.flip(sigmas, (0,))
-        #print(f"sigmas after pruning: ", sigmas)
+        print(f"sigmas after pruning: ", sigmas)
         return sigmas
 
 
@@ -228,7 +228,7 @@ class Txt2NoisyDiscretizationWrapper:
     def __call__(self, *args, **kwargs):
         # sigmas start large first, and decrease then
         sigmas = self.discretization(*args, **kwargs)
-        #print(f"sigmas after discretization, before pruning img2img: ", sigmas)
+        print(f"sigmas after discretization, before pruning img2img: ", sigmas)
         sigmas = torch.flip(sigmas, (0,))
         if self.original_steps is None:
             steps = len(sigmas)
@@ -236,9 +236,9 @@ class Txt2NoisyDiscretizationWrapper:
             steps = self.original_steps + 1
         prune_index = max(min(int(self.strength * steps) - 1, steps - 1), 0)
         sigmas = sigmas[prune_index:]
-        #print("prune index:", prune_index)
+        print("prune index:", prune_index)
         sigmas = torch.flip(sigmas, (0,))
-        #print(f"sigmas after pruning: ", sigmas)
+        print(f"sigmas after pruning: ", sigmas)
         return sigmas
 
 
@@ -254,9 +254,9 @@ def get_guider(key):
             "target": "sgm.modules.diffusionmodules.guiders.IdentityGuider"
         }
     elif guider == "VanillaCFG":
-        scale = 5.0 #cfg-scale
+        scale = 5.0
 
-        thresholder = 'None' #Thresholder
+        thresholder = 'None'
 
         if thresholder == "None":
             dyn_thresh_config = {
@@ -282,6 +282,20 @@ def init_sampling(
     sampler = "EulerEDMSampler",
     discretization = "LegacyDDPMDiscretization",
 ):
+    samplers = [
+            "EulerEDMSampler",
+            "HeunEDMSampler",
+            "EulerAncestralSampler",
+            "DPMPP2SAncestralSampler",
+            "DPMPP2MSampler",
+            "LinearMultistepSampler",
+        ]
+
+    discretizations=[
+            "LegacyDDPMDiscretization",
+            "EDMDiscretization",
+        ]
+
     discretization_config = get_discretization(discretization, key=key)
 
     guider_config = get_guider(key=key)
@@ -307,8 +321,8 @@ def get_discretization(discretization, key=1):
             "target": "sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization",
         }
     elif discretization == "EDMDiscretization":
-        sigma_min = 0.0292  # 0.0292
-        sigma_max = 14.6146  # 14.6146
+        sigma_min = 0.03  # 0.0292
+        sigma_max = 14.61  # 14.6146
         rho = 3.0
         discretization_config = {
             "target": "sgm.modules.diffusionmodules.discretizer.EDMDiscretization",
@@ -324,8 +338,8 @@ def get_discretization(discretization, key=1):
 
 def get_sampler(sampler_name, steps, discretization_config, guider_config, key=1):
     if sampler_name == "EulerEDMSampler" or sampler_name == "HeunEDMSampler":
-        s_churn = 0.0
-        s_tmin = 0.0
+        s_churn = 0
+        s_tmin = 0
         s_tmax = 999.0
         s_noise = 1.0
 
@@ -442,25 +456,35 @@ def do_sample(
     W,
     C,
     F,
-    force_uc_zero_embeddings: List = [],
-    batch2model_input: List = [],
+    force_uc_zero_embeddings: List = None,
+    batch2model_input: List = None,
     return_latents=False,
     filter=None,
 ):
     print("Sampling")
+    if force_uc_zero_embeddings is None:
+        force_uc_zero_embeddings = []
+    if batch2model_input is None:
+        batch2model_input = []
+
     precision_scope = autocast
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
-                t = time.time()
                 num_samples = [num_samples]
-
                 load_model(model.conditioner)
-                if isinstance(value_dict['prompt'],str):
-                    batch, batch_uc = get_batch(model.conditioner,value_dict,num_samples,)
-                else:
-                    batch, batch_uc = get_batch_m(model.conditioner,value_dict,num_samples,)
-
+                batch, batch_uc = get_batch(
+                    model.conditioner,
+                    value_dict,
+                    num_samples,
+                )
+                for key in batch:
+                    if isinstance(batch[key], torch.Tensor):
+                        print(key, batch[key].shape)
+                    elif isinstance(batch[key], list):
+                        print(key, [len(l) for l in batch[key]])
+                    else:
+                        print(key, batch[key])
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
                     batch_uc=batch_uc,
@@ -480,8 +504,6 @@ def do_sample(
 
                 shape = (math.prod(num_samples), C, H // F, W // F)
                 randn = torch.randn(shape).to("cuda")
-                print('Condition Time: ', time.time()-t)
-                t = time.time()
 
                 def denoiser(input, sigma, c):
                     return model.denoiser(
@@ -493,8 +515,7 @@ def do_sample(
                 samples_z = sampler(denoiser, randn, cond=c, uc=uc)
                 unload_model(model.model)
                 unload_model(model.denoiser)
-                print('Sampling Time: ', time.time()-t)
-                t = time.time()
+
                 load_model(model.first_stage_model)
                 samples_x = model.decode_first_stage(samples_z)
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
@@ -505,10 +526,10 @@ def do_sample(
 
                 grid = torch.stack([samples])
                 grid = rearrange(grid, "n b c h w -> (n h) (b w) c")
-                print('Decoding Time: ', time.time()-t)
                 if return_latents:
                     return samples, samples_z
                 return samples
+
 
 def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):
     # Hardcoded demo setups; might undergo some changes in the future
@@ -525,63 +546,6 @@ def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"
             )
             batch_uc["txt"] = (
                 np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N))
-                .reshape(N)
-                .tolist()
-            )
-        elif key == "original_size_as_tuple":
-            batch["original_size_as_tuple"] = (
-                torch.tensor([value_dict["orig_height"], value_dict["orig_width"]])
-                .to(device)
-                .repeat(*N, 1)
-            )
-        elif key == "crop_coords_top_left":
-            batch["crop_coords_top_left"] = (
-                torch.tensor(
-                    [value_dict["crop_coords_top"], value_dict["crop_coords_left"]]
-                )
-                .to(device)
-                .repeat(*N, 1)
-            )
-        elif key == "aesthetic_score":
-            batch["aesthetic_score"] = (
-                torch.tensor([value_dict["aesthetic_score"]]).to(device).repeat(*N, 1)
-            )
-            batch_uc["aesthetic_score"] = (
-                torch.tensor([value_dict["negative_aesthetic_score"]])
-                .to(device)
-                .repeat(*N, 1)
-            )
-
-        elif key == "target_size_as_tuple":
-            batch["target_size_as_tuple"] = (
-                torch.tensor([value_dict["target_height"], value_dict["target_width"]])
-                .to(device)
-                .repeat(*N, 1)
-            )
-        else:
-            batch[key] = value_dict[key]
-
-    for key in batch.keys():
-        if key not in batch_uc and isinstance(batch[key], torch.Tensor):
-            batch_uc[key] = torch.clone(batch[key])
-    return batch, batch_uc
-
-def get_batch_m(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):
-    # Hardcoded demo setups; might undergo some changes in the future
-    keys = list(set([x.input_key for x in conditioner.embedders]))
-    batch = {}
-    batch_uc = {}
-    num_input = N[0]//len(value_dict["prompt"])
-
-    for key in keys:
-        if key == "txt":
-            batch["txt"] = (
-                np.repeat(value_dict["prompt"], repeats=num_input)
-                .reshape(N)
-                .tolist()
-            )
-            batch_uc["txt"] = (
-                np.repeat(value_dict["negative_prompt"], repeats=num_input)
                 .reshape(N)
                 .tolist()
             )

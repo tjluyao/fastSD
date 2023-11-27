@@ -11,8 +11,13 @@ import torch.nn as nn
 from einops import rearrange
 from packaging import version
 
+<<<<<<< HEAD
 from ..modules.autoencoding.regularizers import AbstractRegularizer
 from ..modules.ema import LitEma
+=======
+from ..modules_lora.autoencoding.regularizers import AbstractRegularizer
+from ..modules_lora.ema import LitEma
+>>>>>>> 528b38519088c988d755c750bb71831266058e6f
 from ..util import (default, get_nested_attribute, get_obj_from_str,
                     instantiate_from_config)
 
