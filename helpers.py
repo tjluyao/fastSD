@@ -1,10 +1,14 @@
+import copy, time
 import math
 import os
-from typing import List, Union
-import time
+from glob import glob
+from typing import Dict, List, Optional, Tuple, Union
 
+import cv2
 import numpy as np
 import torch
+import torch.nn as nn
+import torchvision.transforms as TT
 from einops import rearrange, repeat
 from imwatermark import WatermarkEncoder
 from omegaconf import ListConfig, OmegaConf
@@ -12,18 +16,22 @@ from PIL import Image
 from safetensors.torch import load_file as load_safetensors
 from torch import autocast
 from torchvision import transforms
-from torchvision.utils import make_grid
+from torchvision.utils import make_grid, save_image
 
-from scripts.util.detection.nsfw_and_watermark_dectection import DeepFloydDataFiltering
-from sgm.modules.diffusionmodules.sampling import (
-    DPMPP2MSampler,
-    DPMPP2SAncestralSampler,
-    EulerAncestralSampler,
-    EulerEDMSampler,
-    HeunEDMSampler,
-    LinearMultistepSampler,
-)
-from sgm.util import append_dims, instantiate_from_config
+from scripts.demo.discretization import (Img2ImgDiscretizationWrapper,
+                                         Txt2NoisyDiscretizationWrapper)
+from scripts.util.detection.nsfw_and_watermark_dectection import \
+    DeepFloydDataFiltering
+from sgm.inference.helpers import embed_watermark
+from sgm.modules.diffusionmodules.guiders import (LinearPredictionGuider,
+                                                  VanillaCFG)
+from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
+                                                   DPMPP2SAncestralSampler,
+                                                   EulerAncestralSampler,
+                                                   EulerEDMSampler,
+                                                   HeunEDMSampler,
+                                                   LinearMultistepSampler)
+from sgm.util import append_dims, default, instantiate_from_config
 
 lowvram_mode = True
 
@@ -172,6 +180,26 @@ def init_embedder_options(keys, init_dict, prompt=None, negative_prompt=None):
         if key == "target_size_as_tuple":
             value_dict["target_width"] = init_dict["target_width"]
             value_dict["target_height"] = init_dict["target_height"]
+        
+        if key in ["fps_id", "fps"]:
+            fps = 6
+
+            value_dict["fps"] = fps
+            value_dict["fps_id"] = fps - 1
+
+        if key == "motion_bucket_id":
+            mb_id = 127
+            value_dict["motion_bucket_id"] = mb_id
+
+        if key == "pool_image":
+            image = load_img(
+                key="pool_image_input",
+                size=224,
+                center_crop=True,
+            )
+            if image is None:
+                image = torch.zeros(1, 3, 224, 224)
+            value_dict["pool_image"] = image
 
     return value_dict
 
@@ -242,32 +270,36 @@ class Txt2NoisyDiscretizationWrapper:
         return sigmas
 
 
-def get_guider(key):
+def get_guider(options):
     guiders = [
             "VanillaCFG",
             "IdentityGuider",
+            "LinearPredictionGuider",
         ]
-    guider = guiders[0]
+    guider = guiders[options.get("guider", 0)]
+    additional_guider_kwargs = options.pop("additional_guider_kwargs", {})
 
     if guider == "IdentityGuider":
         guider_config = {
             "target": "sgm.modules.diffusionmodules.guiders.IdentityGuider"
         }
     elif guider == "VanillaCFG":
-        scale = 5.0 #cfg-scale
-
-        thresholder = 'None' #Thresholder
-
-        if thresholder == "None":
-            dyn_thresh_config = {
-                "target": "sgm.modules.diffusionmodules.sampling_utils.NoDynamicThresholding"
-            }
-        else:
-            raise NotImplementedError
-
+        scale = options.get("cfg", 5.0)#cfg-scale, default 5.0, min 0.0
         guider_config = {
             "target": "sgm.modules.diffusionmodules.guiders.VanillaCFG",
-            "params": {"scale": scale, "dyn_thresh_config": dyn_thresh_config},
+            "params": {"scale": scale},
+        }
+    elif guider == "LinearPredictionGuider":
+        max_scale = options.get("cfg", 1.5) #cfg-scale, default 1.5, min 1.0
+        min_scale = options.get("min_cfg", 1.0) #cfg-scale, default 1.0, min 1.0, max 10.0
+        guider_config = {
+            "target": "sgm.modules.diffusionmodules.guiders.LinearPredictionGuider",
+            "params": {
+                "max_scale": max_scale,
+                "min_scale": min_scale,
+                "num_frames": options["num_frames"],
+                **additional_guider_kwargs,
+            },
         }
     else:
         raise NotImplementedError
@@ -275,18 +307,19 @@ def get_guider(key):
 
 
 def init_sampling(
-    key=1,
     img2img_strength=1.0,
     stage2strength=None,
     steps = 40,
     sampler = "EulerEDMSampler",
     discretization = "LegacyDDPMDiscretization",
+    options: Optional[Dict[str, int]] = None,
 ):
-    discretization_config = get_discretization(discretization, key=key)
+    options = {} if options is None else options
+    discretization_config = get_discretization(discretization)
 
-    guider_config = get_guider(key=key)
+    guider_config = get_guider(options=options)
 
-    sampler = get_sampler(sampler, steps, discretization_config, guider_config, key=key)
+    sampler = get_sampler(sampler, steps, discretization_config, guider_config)
     if img2img_strength < 1.0:
         print(
             f"Wrapping {sampler.__class__.__name__} with Img2ImgDiscretizationWrapper"
@@ -301,7 +334,7 @@ def init_sampling(
     return sampler
 
 
-def get_discretization(discretization, key=1):
+def get_discretization(discretization, options=None):
     if discretization == "LegacyDDPMDiscretization":
         discretization_config = {
             "target": "sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization",
@@ -322,7 +355,7 @@ def get_discretization(discretization, key=1):
     return discretization_config
 
 
-def get_sampler(sampler_name, steps, discretization_config, guider_config, key=1):
+def get_sampler(sampler_name, steps, discretization_config, guider_config):
     if sampler_name == "EulerEDMSampler" or sampler_name == "HeunEDMSampler":
         s_churn = 0.0
         s_tmin = 0.0
@@ -407,8 +440,11 @@ def get_interactive_image(key=None) -> Image.Image:
         return image
 
 
-def load_img(display=True, key=None):
-    image = get_interactive_image(key=key)
+def load_img(display=True, 
+             size:Union[None, int, Tuple[int, int]] = None,
+             center_crop: bool = False,
+             ):
+    image = get_interactive_image()
     if image is None:
         return None
     if display:
@@ -416,12 +452,15 @@ def load_img(display=True, key=None):
     w, h = image.size
     print(f"loaded input image of size ({w}, {h})")
 
-    transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Lambda(lambda x: x * 2.0 - 1.0),
-        ]
-    )
+    transform = []
+    if size is not None:
+        transform.append(transforms.Resize(size))
+    if center_crop:
+        transform.append(transforms.CenterCrop(size))
+    transform.append(transforms.ToTensor())
+    transform.append(transforms.Lambda(lambda x: 2.0 * x - 1.0))
+
+    transform = transforms.Compose(transform)
     img = transform(image)[None, ...]
     print(f"input min/max/mean: {img.min():.3f}/{img.max():.3f}/{img.mean():.3f}")
     return img
@@ -709,3 +748,96 @@ def do_img2img(
                 if return_latents:
                     return samples, samples_z
                 return samples
+            
+def get_resizing_factor(
+    desired_shape: Tuple[int, int], current_shape: Tuple[int, int]
+) -> float:
+    r_bound = desired_shape[1] / desired_shape[0]
+    aspect_r = current_shape[1] / current_shape[0]
+    if r_bound >= 1.0:
+        if aspect_r >= r_bound:
+            factor = min(desired_shape) / min(current_shape)
+        else:
+            if aspect_r < 1.0:
+                factor = max(desired_shape) / min(current_shape)
+            else:
+                factor = max(desired_shape) / max(current_shape)
+    else:
+        if aspect_r <= r_bound:
+            factor = min(desired_shape) / min(current_shape)
+        else:
+            if aspect_r > 1:
+                factor = max(desired_shape) / min(current_shape)
+            else:
+                factor = max(desired_shape) / max(current_shape)
+
+    return factor
+
+def load_img_for_prediction(
+    W: int, H: int, display=True, key=None, device="cuda"
+) -> torch.Tensor:
+    image = get_interactive_image(key=key)
+    if image is None:
+        return None
+    if display:
+        print(image)
+    w, h = image.size
+
+    image = np.array(image).transpose(2, 0, 1)
+    image = torch.from_numpy(image).to(dtype=torch.float32) / 255.0
+    image = image.unsqueeze(0)
+
+    rfs = get_resizing_factor((H, W), (h, w))
+    resize_size = [int(np.ceil(rfs * s)) for s in (h, w)]
+    top = (resize_size[0] - H) // 2
+    left = (resize_size[1] - W) // 2
+
+    image = torch.nn.functional.interpolate(
+        image, resize_size, mode="area", antialias=False
+    )
+    image = TT.functional.crop(image, top=top, left=left, height=H, width=W)
+
+    if display:
+        numpy_img = np.transpose(image[0].numpy(), (1, 2, 0))
+        pil_image = Image.fromarray((numpy_img * 255).astype(np.uint8))
+        print(pil_image)
+    return image.to(device) * 2.0 - 1.0
+
+
+def save_video_as_grid_and_mp4(
+    video_batch: torch.Tensor, save_path: str, T: int, fps: int = 5
+):
+    os.makedirs(save_path, exist_ok=True)
+    base_count = len(glob(os.path.join(save_path, "*.mp4")))
+
+    video_batch = rearrange(video_batch, "(b t) c h w -> b t c h w", t=T)
+    video_batch = embed_watermark(video_batch)
+    for vid in video_batch:
+        save_image(vid, fp=os.path.join(save_path, f"{base_count:06d}.png"), nrow=4)
+
+        video_path = os.path.join(save_path, f"{base_count:06d}.mp4")
+
+        writer = cv2.VideoWriter(
+            video_path,
+            cv2.VideoWriter_fourcc(*"MP4V"),
+            fps,
+            (vid.shape[-1], vid.shape[-2]),
+        )
+
+        vid = (
+            (rearrange(vid, "t c h w -> t h w c") * 255).cpu().numpy().astype(np.uint8)
+        )
+        for frame in vid:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            writer.write(frame)
+
+        writer.release()
+
+        video_path_h264 = video_path[:-4] + "_h264.mp4"
+        os.system(f"ffmpeg -i {video_path} -c:v libx264 {video_path_h264}")
+
+        with open(video_path_h264, "rb") as f:
+            video_bytes = f.read()
+        print(video_bytes)
+
+        base_count += 1
