@@ -310,15 +310,28 @@ def init_sampling(
     img2img_strength=1.0,
     stage2strength=None,
     steps = 40,
-    sampler = "EulerEDMSampler",
-    discretization = "LegacyDDPMDiscretization",
+    sampler = None,
+    discretization = None,
     options: Optional[Dict[str, int]] = None,
 ):
     options = {} if options is None else options
+    discretizations = [
+        "LegacyDDPMDiscretization",
+        "EDMDiscretization",
+    ]
+    discretization = discretizations[options.get("discretization", 0)]
     discretization_config = get_discretization(discretization)
 
     guider_config = get_guider(options=options)
-
+    samplers = [
+        "EulerEDMSampler",
+        "HeunEDMSampler",
+        "EulerAncestralSampler",
+        "DPMPP2SAncestralSampler",
+        "DPMPP2MSampler",
+        "LinearMultistepSampler",
+    ]
+    sampler = samplers[options.get("sampler", 0)]
     sampler = get_sampler(sampler, steps, discretization_config, guider_config)
     if img2img_strength < 1.0:
         print(

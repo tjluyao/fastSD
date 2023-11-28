@@ -140,7 +140,8 @@ VERSION2SPECS = {
 }
 
 def get_batch_v(conditioner, 
-                value_dicts, N: Union[List, ListConfig],
+                value_dicts, 
+                N: Union[List, ListConfig],
                 device="cuda",
                 T: int = None,
                 additional_batch_uc_fields: List[str] = [],
@@ -156,12 +157,14 @@ def get_batch_v(conditioner,
             prompts = []
             n_prompts = []
             for dict in value_dicts:
-                prompts.append(np.repeat(dict['prompt'], repeats=dict['num_samples']*dict['T']))
-                n_prompts.append(np.repeat(dict['negative_prompt'], repeats=dict['num_samples']*dict['T']))
-            prompts = np.array(prompts)
-            n_prompts = np.array(n_prompts)
-            batch["txt"] = prompts.reshape(N).tolist()
-            batch_uc["txt"] = n_prompts.reshape(N).tolist()
+                prompts.append(
+                    repeat(dict['prompt'], "1 ... -> b ...", b=dict['num_samples']*dict['T'])
+                    )
+                n_prompts.append(
+                    repeat(dict['negative_prompt'], "1 ... -> b ...", b=dict['num_samples']*dict['T'])
+                    )
+            batch[key] = rearrange(batch[key],'b t ... -> (b t) ...')
+            batch_uc[key] = rearrange(batch_uc[key],'b t ... -> (b t) ...')
             
         elif key == "original_size_as_tuple":
             batch["original_size_as_tuple"] = []
@@ -209,17 +212,17 @@ def get_batch_v(conditioner,
             batch["target_size_as_tuple"] = torch.cat(batch["target_size_as_tuple"], dim=0)
 
         elif key == "fps":
-            batch[key] = []
+            batch["fps"] = []
             for dict in value_dicts:
-                batch[key].append(
+                batch["fps"].append(
                     torch.tensor([dict["fps"]]).to(device).repeat(dict['num_samples']*dict['T'])
                 )
-            batch[key] = torch.cat(batch[key], dim=0)
+            batch["fps"] = torch.cat(batch[key], dim=0)
 
         elif key == "fps_id":
-            batch[key] = []
+            batch["fps_id"] = []
             for dict in value_dicts:
-                batch[key].append(
+                batch["fps_id"].append(
                     torch.tensor([dict["fps_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
                 )
             batch[key] = torch.cat(batch[key], dim=0)
@@ -363,7 +366,7 @@ def collect_input():
     while True:
         user_input = input()
         if user_input != '\n':
-            req = request(img_path='inputs/01.jpg'
+            req = request(img_path='inputs/00.jpg'
                         )
             wait_to_encode.append(req)
 
@@ -387,6 +390,14 @@ def collect_batch(options=None,sampler=None):
                                                      force_uc_zero_embeddings=options.get("force_uc_zero_embeddings", None),
                                                      force_cond_zero_embeddings=options.get("force_cond_zero_embeddings", None),
                                                      )
+                        
+                        for key in c:
+                            print(key, c[key].shape)
+                        for key in uc:
+                            print(key, uc[key].shape)
+                        for key in additional_model_inputs:
+                            print(key, additional_model_inputs[key].shape if isinstance(additional_model_inputs[key], torch.Tensor) else additional_model_inputs[key])
+
                         t = 0
                         for i in encode_process:
                             pic = z[t:t+i.num,]
@@ -494,11 +505,11 @@ def sample(sampling):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Demo of argparse')
-    parser.add_argument('--version', type=str, default='svd_xt', required=False)
+    parser.add_argument('--version', type=str, default='svd', required=False)
     parser.add_argument('--sampler', type=str, default='EulerEDMSampler', required=False)
     parser.add_argument('--output', type=str, default='outputs/', required=False)
     parser.add_argument('--seed', type=int, default=49, required=False)
-    parser.add_argument('--default_steps', type=int, default=40, required=False)
+    parser.add_argument('--default_steps', type=int, default=10, required=False)
 
     args = parser.parse_args()
     version = args.version
@@ -513,15 +524,15 @@ if __name__ == '__main__':
 
     stage2strength = None
 
-    W = version_dict["W"]
-    H = version_dict["H"]
+    W = 512
+    H = 512
     C = version_dict["C"]
     F = version_dict["f"] 
     T = 6
 
     options = version_dict["options"]
     options["num_frames"] = T
-    sampler = init_sampling(stage2strength=stage2strength, options=options)
+    sampler = init_sampling(stage2strength=stage2strength, options=options,steps=10)
 
     decoding_t = options.get("decoding_t", T)
     saving_fps = 6
