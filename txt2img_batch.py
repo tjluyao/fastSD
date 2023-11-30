@@ -10,7 +10,7 @@ VERSION2SPECS = {
         "f": 8,
         "is_legacy": False,
         "config": "configs/inference/sd_xl_base.yaml",
-        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+        "ckpt": "/root/fastSD/checkpoints/sd_xl_base_1.0.safetensors",
     },
     "SDXL-base-0.9": {
         "H": 1024,
@@ -77,8 +77,8 @@ if __name__ == '__main__':
     version_dict = VERSION2SPECS[version]
     seed_everything(seed)
 
-    prompts = ['office lady sitting, black stocking, 8k, high resolution','super girl standing, short skirt, 8k, high resolution']
-    negative_prompts = ['','']
+    prompts = ['office lady sitting, black stocking, 8k, high resolution','super girl standing, short skirt, 8k, high resolution','student girl with happy face,8k']
+    negative_prompts = ['','','']
 
     state = init_model(version_dict)
     model = state["model"]
@@ -111,11 +111,11 @@ if __name__ == '__main__':
         negative_prompt=negative_prompts,
     )
 
-    sampler = init_sampling(stage2strength=stage2strength, steps=30)
+    sampler = init_sampling(stage2strength=stage2strength, steps=40)
     num_rows = 1
     num_cols = 2 * len(prompts)
     num_samples = num_rows * num_cols
-
+    t = time.time()
     samples = do_sample(
         state["model"],
         sampler,
@@ -129,5 +129,5 @@ if __name__ == '__main__':
         return_latents=add_pipeline,
         filter=state.get("filter"),
     )
-
+    print(f"Time taken: {time.time() - t:.2f}s")
     perform_save_locally(output, samples)

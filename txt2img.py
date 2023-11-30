@@ -1,6 +1,7 @@
 import argparse
 from pytorch_lightning import seed_everything
 from helper import *
+import time
 
 VERSION2SPECS = {
     "SDXL-base-1.0": {
@@ -10,7 +11,7 @@ VERSION2SPECS = {
         "f": 8,
         "is_legacy": False,
         "config": "configs/inference/sd_xl_base.yaml",
-        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+        "ckpt": "/root/fastSD/checkpoints/sd_xl_base_1.0.safetensors",
     },
     "SDXL-base-0.9": {
         "H": 1024,
@@ -109,7 +110,7 @@ if __name__ == '__main__':
     num_rows = 1
     num_cols = 2
     num_samples = num_rows * num_cols
-
+    t = time.time()
     samples = do_sample(
         state["model"],
         sampler,
@@ -123,5 +124,5 @@ if __name__ == '__main__':
         return_latents=add_pipeline,
         filter=state.get("filter"),
     )
-
+    print(f"Time taken: {time.time() - t:.2f}s")
     perform_save_locally(output, samples)
