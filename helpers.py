@@ -287,7 +287,7 @@ def get_guider(options):
         scale = options.get("cfg", 5.0)#cfg-scale, default 5.0, min 0.0
         guider_config = {
             "target": "sgm.modules.diffusionmodules.guiders.VanillaCFG",
-            "params": {"scale": scale},
+            "params": {"scale": scale,**additional_guider_kwargs,},
         }
     elif guider == "LinearPredictionGuider":
         max_scale = options.get("cfg", 1.5) #cfg-scale, default 1.5, min 1.0
@@ -307,7 +307,7 @@ def get_guider(options):
 
 
 def init_sampling(
-    img2img_strength=1.0,
+    img2img_strength=None,
     stage2strength=None,
     steps = 40,
     sampler = None,
@@ -320,7 +320,7 @@ def init_sampling(
         "EDMDiscretization",
     ]
     discretization = discretizations[options.get("discretization", 0)]
-    discretization_config = get_discretization(discretization)
+    discretization_config = get_discretization(discretization,options=options)
 
     guider_config = get_guider(options=options)
     samplers = [
@@ -333,10 +333,8 @@ def init_sampling(
     ]
     sampler = samplers[options.get("sampler", 0)]
     sampler = get_sampler(sampler, steps, discretization_config, guider_config)
-    if img2img_strength < 1.0:
-        print(
-            f"Wrapping {sampler.__class__.__name__} with Img2ImgDiscretizationWrapper"
-        )
+    if img2img_strength is not None:
+        print("Wrapping {sampler.__class__.__name__} with Img2ImgDiscretizationWrapper")
         sampler.discretization = Img2ImgDiscretizationWrapper(
             sampler.discretization, strength=img2img_strength
         )
@@ -353,9 +351,9 @@ def get_discretization(discretization, options=None):
             "target": "sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization",
         }
     elif discretization == "EDMDiscretization":
-        sigma_min = 0.0292  # 0.0292
-        sigma_max = 14.6146  # 14.6146
-        rho = 3.0
+        sigma_min = options.get("sigma_min", 0.0292)  # 0.0292
+        sigma_max = options.get("sigma_max", 14.6146)  # 14.6146
+        rho = options.get("rho", 3.0)
         discretization_config = {
             "target": "sgm.modules.diffusionmodules.discretizer.EDMDiscretization",
             "params": {
@@ -494,29 +492,42 @@ def do_sample(
     W,
     C,
     F,
-    force_uc_zero_embeddings: List = [],
-    batch2model_input: List = [],
+    force_uc_zero_embeddings: Optional[List] = None,
+    force_cond_zero_embeddings: Optional[List] = None,
+    batch2model_input: List = None,
     return_latents=False,
     filter=None,
+    T=None,
+    additional_batch_uc_fields=None,
+    decoding_t=None,
 ):
-    print("Sampling")
+    force_uc_zero_embeddings = default(force_uc_zero_embeddings, [])
+    batch2model_input = default(batch2model_input, [])
+    additional_batch_uc_fields = default(additional_batch_uc_fields, [])
+
     precision_scope = autocast
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
-                t = time.time()
-                num_samples = [num_samples]
+                if T is not None:
+                    num_samples = [num_samples, T]
+                else:
+                    num_samples = [num_samples]
 
                 load_model(model.conditioner)
-                if isinstance(value_dict['prompt'],str):
-                    batch, batch_uc = get_batch(model.conditioner,value_dict,num_samples,)
-                else:
-                    batch, batch_uc = get_batch_m(model.conditioner,value_dict,num_samples,)
+                batch, batch_uc = get_batch(
+                    model.conditioner,
+                    value_dict,
+                    num_samples,
+                    T=T,
+                    additional_batch_uc_fields=additional_batch_uc_fields,
+                )
 
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
                     batch_uc=batch_uc,
                     force_uc_zero_embeddings=force_uc_zero_embeddings,
+                    force_cond_zero_embeddings=force_cond_zero_embeddings,
                 )
                 unload_model(model.conditioner)
 
@@ -525,15 +536,32 @@ def do_sample(
                         c[k], uc[k] = map(
                             lambda y: y[k][: math.prod(num_samples)].to("cuda"), (c, uc)
                         )
+                    if k in ["crossattn", "concat"] and T is not None:
+                        uc[k] = repeat(uc[k], "b ... -> b t ...", t=T)
+                        uc[k] = rearrange(uc[k], "b t ... -> (b t) ...", t=T)
+                        c[k] = repeat(c[k], "b ... -> b t ...", t=T)
+                        c[k] = rearrange(c[k], "b t ... -> (b t) ...", t=T)
 
                 additional_model_inputs = {}
                 for k in batch2model_input:
-                    additional_model_inputs[k] = batch[k]
+                    if k == "image_only_indicator":
+                        assert T is not None
+
+                        if isinstance(
+                            sampler.guider, (VanillaCFG, LinearPredictionGuider)
+                        ):
+                            additional_model_inputs[k] = torch.zeros(
+                                num_samples[0] * 2, num_samples[1]
+                            ).to("cuda")
+                        else:
+                            additional_model_inputs[k] = torch.zeros(num_samples).to(
+                                "cuda"
+                            )
+                    else:
+                        additional_model_inputs[k] = batch[k]
 
                 shape = (math.prod(num_samples), C, H // F, W // F)
                 randn = torch.randn(shape).to("cuda")
-                print('Condition Time: ', time.time()-t)
-                t = time.time()
 
                 def denoiser(input, sigma, c):
                     return model.denoiser(
@@ -545,9 +573,11 @@ def do_sample(
                 samples_z = sampler(denoiser, randn, cond=c, uc=uc)
                 unload_model(model.model)
                 unload_model(model.denoiser)
-                print('Sampling Time: ', time.time()-t)
-                t = time.time()
+
                 load_model(model.first_stage_model)
+                model.en_and_decode_n_samples_a_time = (
+                    decoding_t  # Decode n frames at a time
+                )
                 samples_x = model.decode_first_stage(samples_z)
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
                 unload_model(model.first_stage_model)
@@ -555,14 +585,26 @@ def do_sample(
                 if filter is not None:
                     samples = filter(samples)
 
-                grid = torch.stack([samples])
-                grid = rearrange(grid, "n b c h w -> (n h) (b w) c")
-                print('Decoding Time: ', time.time()-t)
+                if T is None:
+                    grid = torch.stack([samples])
+                    grid = rearrange(grid, "n b c h w -> (n h) (b w) c")
+                else:
+                    as_vids = rearrange(samples, "(b t) c h w -> b t c h w", t=T)
+                    for i, vid in enumerate(as_vids):
+                        grid = rearrange(make_grid(vid, nrow=4), "c h w -> h w c")
+
                 if return_latents:
                     return samples, samples_z
                 return samples
 
-def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):
+def get_batch(
+    conditioner,
+    value_dict: dict,
+    N: Union[List, ListConfig],
+    device: str = "cuda",
+    T: int = None,
+    additional_batch_uc_fields: List[str] = [],
+):
     # Hardcoded demo setups; might undergo some changes in the future
     keys = list(set([x.input_key for x in conditioner.embedders]))
     batch = {}
@@ -570,21 +612,15 @@ def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"
 
     for key in keys:
         if key == "txt":
-            batch["txt"] = (
-                np.repeat([value_dict["prompt"]], repeats=math.prod(N))
-                .reshape(N)
-                .tolist()
-            )
-            batch_uc["txt"] = (
-                np.repeat([value_dict["negative_prompt"]], repeats=math.prod(N))
-                .reshape(N)
-                .tolist()
-            )
+            batch["txt"] = [value_dict["prompt"]] * math.prod(N)
+
+            batch_uc["txt"] = [value_dict["negative_prompt"]] * math.prod(N)
+
         elif key == "original_size_as_tuple":
             batch["original_size_as_tuple"] = (
                 torch.tensor([value_dict["orig_height"], value_dict["orig_width"]])
                 .to(device)
-                .repeat(*N, 1)
+                .repeat(math.prod(N), 1)
             )
         elif key == "crop_coords_top_left":
             batch["crop_coords_top_left"] = (
@@ -592,30 +628,67 @@ def get_batch(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"
                     [value_dict["crop_coords_top"], value_dict["crop_coords_left"]]
                 )
                 .to(device)
-                .repeat(*N, 1)
+                .repeat(math.prod(N), 1)
             )
         elif key == "aesthetic_score":
             batch["aesthetic_score"] = (
-                torch.tensor([value_dict["aesthetic_score"]]).to(device).repeat(*N, 1)
+                torch.tensor([value_dict["aesthetic_score"]])
+                .to(device)
+                .repeat(math.prod(N), 1)
             )
             batch_uc["aesthetic_score"] = (
                 torch.tensor([value_dict["negative_aesthetic_score"]])
                 .to(device)
-                .repeat(*N, 1)
+                .repeat(math.prod(N), 1)
             )
 
         elif key == "target_size_as_tuple":
             batch["target_size_as_tuple"] = (
                 torch.tensor([value_dict["target_height"], value_dict["target_width"]])
                 .to(device)
-                .repeat(*N, 1)
+                .repeat(math.prod(N), 1)
+            )
+        elif key == "fps":
+            batch[key] = (
+                torch.tensor([value_dict["fps"]]).to(device).repeat(math.prod(N))
+            )
+        elif key == "fps_id":
+            batch[key] = (
+                torch.tensor([value_dict["fps_id"]]).to(device).repeat(math.prod(N))
+            )
+        elif key == "motion_bucket_id":
+            batch[key] = (
+                torch.tensor([value_dict["motion_bucket_id"]])
+                .to(device)
+                .repeat(math.prod(N))
+            )
+        elif key == "pool_image":
+            batch[key] = repeat(value_dict[key], "1 ... -> b ...", b=math.prod(N)).to(
+                device, dtype=torch.half
+            )
+        elif key == "cond_aug":
+            batch[key] = repeat(
+                torch.tensor([value_dict["cond_aug"]]).to("cuda"),
+                "1 -> b",
+                b=math.prod(N),
+            )
+        elif key == "cond_frames":
+            batch[key] = repeat(value_dict["cond_frames"], "1 ... -> b ...", b=N[0])
+        elif key == "cond_frames_without_noise":
+            batch[key] = repeat(
+                value_dict["cond_frames_without_noise"], "1 ... -> b ...", b=N[0]
             )
         else:
             batch[key] = value_dict[key]
 
+    if T is not None:
+        batch["num_video_frames"] = T
+
     for key in batch.keys():
         if key not in batch_uc and isinstance(batch[key], torch.Tensor):
             batch_uc[key] = torch.clone(batch[key])
+        elif key in additional_batch_uc_fields and key not in batch_uc:
+            batch_uc[key] = copy.copy(batch[key])
     return batch, batch_uc
 
 def get_batch_m(conditioner, value_dict, N: Union[List, ListConfig], device="cuda"):

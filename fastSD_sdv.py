@@ -34,6 +34,7 @@ class request(object):
         )
         img = load_img_for_prediction(W, H, display=False, key=img)
         cond_aug = 0.02
+        value_dict["image_only_indicator"] = 0
         value_dict["cond_frames_without_noise"] = img
         value_dict["cond_frames"] = img + cond_aug * torch.randn_like(img)
         value_dict["cond_aug"] = cond_aug
@@ -141,7 +142,7 @@ VERSION2SPECS = {
 
 def get_batch_v(conditioner, 
                 value_dicts, 
-                N: Union[List, ListConfig],
+                N: Union[List, ListConfig] = None,
                 device="cuda",
                 T: int = None,
                 additional_batch_uc_fields: List[str] = [],
@@ -270,7 +271,6 @@ def get_batch_v(conditioner,
         else:
             batch[key] = standard_dict[key]
 
-    T = sum([dict['T'] for dict in value_dicts])
     if T is not None:
         batch["num_video_frames"] = T
 
@@ -294,13 +294,14 @@ def get_condition(model,
             with model.ema_scope():
                 num_samples = sum([obj['num_samples'] for obj in value_dicts])
                 num_frames = sum([obj['T'] for obj in value_dicts])
+                num = sum([obj['num_samples'] * obj['T'] for obj in value_dicts])
                 N = [num_samples, num_frames]
 
                 load_model(model.conditioner)
                 batch, batch_uc = get_batch_v(
                     model.conditioner,
                     value_dicts,
-                    N,
+                    T=T,
                 )
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
@@ -335,13 +336,13 @@ def get_condition(model,
                         assert num_frames is not None
 
                         if isinstance(sampler.guider, (VanillaCFG, LinearPredictionGuider)):
-                            additional_model_inputs[k] = torch.zeros(N[0] * 2, N[1]).to("cuda")
+                            additional_model_inputs[k] = torch.zeros(num_samples*2, T).to("cuda")
                         else:
                             additional_model_inputs[k] = torch.zeros(N).to("cuda")
                     else:
                         additional_model_inputs[k] = batch[k]
 
-                shape = (math.prod(N), C, H // F, W // F)
+                shape = (num, C, H // F, W // F)
                 randn = torch.randn(shape).to("cuda")
                 return randn, c, uc, additional_model_inputs
 
@@ -366,9 +367,13 @@ def collect_input():
     while True:
         user_input = input()
         if user_input != '\n':
-            req = request(img_path='inputs/00.jpg'
-                        )
+            try:
+                req = request(img_path='inputs/'+user_input+'.jpg')
+            except:
+                print('Invalid input')
+                continue
             wait_to_encode.append(req)
+
 
 def collect_batch(options=None,sampler=None):
     global wait_to_encode
@@ -390,14 +395,14 @@ def collect_batch(options=None,sampler=None):
                                                      force_uc_zero_embeddings=options.get("force_uc_zero_embeddings", None),
                                                      force_cond_zero_embeddings=options.get("force_cond_zero_embeddings", None),
                                                      )
-                        
+                        '''
                         for key in c:
                             print(key, c[key].shape)
                         for key in uc:
                             print(key, uc[key].shape)
                         for key in additional_model_inputs:
                             print(key, additional_model_inputs[key].shape if isinstance(additional_model_inputs[key], torch.Tensor) else additional_model_inputs[key])
-
+                        '''
                         t = 0
                         for i in encode_process:
                             pic = z[t:t+i.num,]
@@ -489,7 +494,16 @@ def sample(sampling):
                             if key == "image_only_indicator":
                                 additional_model_inputs[key] = torch.cat([d[key] for d in dict_list], dim=0)
                             elif key == "num_video_frames":
-                                additional_model_inputs[key] = sum([d[key] for d in dict_list])
+                                additional_model_inputs[key] = T
+                        '''
+                        print(begin.shape, x.shape, end.shape)
+                        for key in cond:
+                            print(key, cond[key].shape)
+                        for key in uc:
+                            print(key, uc[key].shape)
+                        for key in additional_model_inputs:
+                            print(key, additional_model_inputs[key].shape if isinstance(additional_model_inputs[key], torch.Tensor) else additional_model_inputs[key])
+                        '''
 
                         def denoiser(input, sigma, c):
                             return state["model"].denoiser(state["model"].model, input, sigma, c, **additional_model_inputs)
@@ -502,6 +516,46 @@ def sample(sampling):
                             i.sampling['step'] = i.sampling['step'] + 1
                             t = t+i.num
                         return sampling
+
+def test(model):
+    with torch.no_grad():
+        with autocast("cuda"):
+            with model.ema_scope():
+                req = request(img_path='inputs/00.jpg')
+                req2 = request(img_path='inputs/01.jpg')
+                #req.value_dict['num_samples'] = 2
+                value_dicts = [req.value_dict, req2.value_dict]
+                
+                z, c, uc, additional_model_inputs= get_condition(model,
+                                                                value_dicts, 
+                                                                sampler=sampler,
+                                                                batch2model_input=["num_video_frames", "image_only_indicator"],
+                                                                force_uc_zero_embeddings=options.get("force_uc_zero_embeddings", None),
+                                                                force_cond_zero_embeddings=options.get("force_cond_zero_embeddings", None),
+                                                                )
+                print(z.shape)
+                for key in c:
+                    print(key, c[key].shape)
+                for key in uc:
+                    print(key, uc[key].shape)
+                for key in additional_model_inputs:
+                    print(key, additional_model_inputs[key].shape if isinstance(additional_model_inputs[key], torch.Tensor) else additional_model_inputs[key])
+                def denoiser(input, sigma, c):
+                    return model.denoiser(model.model, input, sigma, c, **additional_model_inputs)
+
+                load_model(model.denoiser)
+                load_model(model.model)
+                samples_z = sampler(denoiser, z, cond=c, uc=uc)
+                unload_model(model.model)
+                unload_model(model.denoiser)
+
+                load_model(model.first_stage_model)
+                samples_x = model.decode_first_stage(samples_z)
+                samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
+                unload_model(model.first_stage_model) 
+                perform_save_locally(output, samples)  #Save to local file
+                exit()
+    return
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Demo of argparse')
@@ -522,8 +576,6 @@ if __name__ == '__main__':
     seed_everything(seed)
     state = init_model(version_dict, load_filter=True)
 
-    stage2strength = None
-
     W = 512
     H = 512
     C = version_dict["C"]
@@ -532,10 +584,8 @@ if __name__ == '__main__':
 
     options = version_dict["options"]
     options["num_frames"] = T
-    sampler = init_sampling(stage2strength=stage2strength, options=options,steps=10)
-
-    decoding_t = options.get("decoding_t", T)
-    saving_fps = 6
+    sampler = init_sampling(options=options,steps=10)
+    saving_fps = 6 #saving video at fps, min_value=1
 
     input_thread = threading.Thread(target=collect_input)
     input_thread.daemon = True
@@ -551,7 +601,7 @@ if __name__ == '__main__':
 
     n_scheduled = 0
     n_rsrv = 0
-
+    #test(state["model"])
     while True:
         r_batch = []
         batch,n_rsrv = orca_select(wait_to_sample,n_rsrv)  #batch on req
