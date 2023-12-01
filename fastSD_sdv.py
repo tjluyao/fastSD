@@ -12,7 +12,7 @@ wait_to_refine = []
 
 class request(object):
     def __init__(self, 
-                 img_path: str=None,
+                 img_path: str = None,
                  num_samples = 1,
                  num_frames = 6,
                  ) -> None:
@@ -221,20 +221,20 @@ def get_batch_v(conditioner,
             batch["fps"] = torch.cat(batch[key], dim=0)
 
         elif key == "fps_id":
-            batch["fps_id"] = []
+            batch[key] = []
+            batch_uc[key] = []
             for dict in value_dicts:
-                batch["fps_id"].append(
-                    torch.tensor([dict["fps_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
-                )
-            batch[key] = torch.cat(batch[key], dim=0)
+                tensor = torch.tensor([dict["fps_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                batch[key].append(tensor)
+                batch_uc[key].append(tensor)
 
         elif key == "motion_bucket_id":
             batch[key] = []
+            batch_uc[key] = []
             for dict in value_dicts:
-                batch[key].append(
-                    torch.tensor([dict["motion_bucket_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
-                )
-            batch[key] = torch.cat(batch[key], dim=0)
+                tensor = torch.tensor([dict["motion_bucket_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                batch[key].append(tensor)
+                batch_uc[key].append(tensor)
 
         elif key == "pool_image":
             batch[key] = []
@@ -247,11 +247,11 @@ def get_batch_v(conditioner,
 
         elif key == "cond_aug":
             batch[key] = []
+            batch_uc[key] = []
             for dict in value_dicts:
-                batch[key].append(
-                    repeat(torch.tensor([dict["cond_aug"]]).to(device), "1 -> b", b=dict['num_samples']*dict['T'])
-                )
-            batch[key] = torch.cat(batch[key], dim=0)
+                tensor = repeat(torch.tensor([dict["cond_aug"]]).to(device), "1 -> b", b=dict['num_samples']*dict['T'])
+                batch[key].append(tensor)
+                batch_uc[key].append(tensor)
 
         elif key == "cond_frames":
             batch[key] = []
@@ -288,15 +288,14 @@ def get_condition(model,
                   force_cond_zero_embeddings=[],
                   batch2model_input=[],
                   ):
-    print("Getting condition")
+    print("Getting condition for "+str(len(value_dicts))+" videos")
     with torch.no_grad():
         with autocast("cuda"):
             with model.ema_scope():
                 num_samples = sum([obj['num_samples'] for obj in value_dicts])
                 num_frames = sum([obj['T'] for obj in value_dicts])
                 num = sum([obj['num_samples'] * obj['T'] for obj in value_dicts])
-                N = [num_samples, num_frames]
-
+                N = [num_samples, T]
                 load_model(model.conditioner)
                 batch, batch_uc = get_batch_v(
                     model.conditioner,
@@ -308,7 +307,10 @@ def get_condition(model,
                     batch_uc=batch_uc,
                     force_uc_zero_embeddings=force_uc_zero_embeddings,
                     force_cond_zero_embeddings=force_cond_zero_embeddings,
+                    muti_input=True,
                 )
+                
+
                 unload_model(model.conditioner)
                 for k in c:
                     if not k == "crossattn":
@@ -329,7 +331,7 @@ def get_condition(model,
                             t = t + dict['num_samples']
                         c[k] = torch.cat(list_c, dim=0)
                         uc[k] = torch.cat(list_uc, dim=0)
-                
+
                 additional_model_inputs = {}
                 for k in batch2model_input:
                     if k == "image_only_indicator":
@@ -351,6 +353,7 @@ def decode(model, samples_z, return_latents=False, filter=None):
         with autocast("cuda"):
             with model.ema_scope():
                 load_model(model.first_stage_model)
+                model.en_and_decode_n_samples_a_time = 2
                 samples_x = model.decode_first_stage(samples_z)
                 samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
                 unload_model(model.first_stage_model)
@@ -404,6 +407,7 @@ def collect_batch(options=None,sampler=None):
                             print(key, additional_model_inputs[key].shape if isinstance(additional_model_inputs[key], torch.Tensor) else additional_model_inputs[key])
                         '''
                         t = 0
+                        t2 = 0
                         for i in encode_process:
                             pic = z[t:t+i.num,]
                             ic = {k: c[k][t:t+i.num,] for k in c}
@@ -411,7 +415,7 @@ def collect_batch(options=None,sampler=None):
                             ami = {}
                             for k in additional_model_inputs:
                                 if k == "image_only_indicator":
-                                    ami[k] = additional_model_inputs[k][t:t+i.num * 2,]
+                                    ami[k] = additional_model_inputs[k][t2:t2+i.num_samples * 2,]
                                 elif k == "num_video_frames":
                                     ami[k] = i.value_dict['T']
 
@@ -427,6 +431,7 @@ def collect_batch(options=None,sampler=None):
                                             }
                             wait_to_sample.append(i)
                             t = t + i.num
+                            t2 = t2 + i.num_samples * 2
 
                     if wait_to_decode:
                         print('Start decoding')
@@ -496,6 +501,7 @@ def sample(sampling):
                             elif key == "num_video_frames":
                                 additional_model_inputs[key] = T
                         '''
+                        print(len(sampling))  
                         print(begin.shape, x.shape, end.shape)
                         for key in cond:
                             print(key, cond[key].shape)
@@ -522,7 +528,10 @@ def test(model):
         with autocast("cuda"):
             with model.ema_scope():
                 req = request(img_path='inputs/00.jpg')
-                req2 = request(img_path='inputs/01.jpg')
+                req2 = request(img_path='inputs/01.jpg',num_frames=T)
+                wait_to_encode.append(req2)
+                #wait_to_encode.append(req)
+                return
                 #req.value_dict['num_samples'] = 2
                 value_dicts = [req.value_dict, req2.value_dict]
                 
@@ -580,7 +589,7 @@ if __name__ == '__main__':
     H = 512
     C = version_dict["C"]
     F = version_dict["f"] 
-    T = 6
+    T = 25
 
     options = version_dict["options"]
     options["num_frames"] = T
@@ -601,7 +610,7 @@ if __name__ == '__main__':
 
     n_scheduled = 0
     n_rsrv = 0
-    #test(state["model"])
+    test(state["model"])
     while True:
         r_batch = []
         batch,n_rsrv = orca_select(wait_to_sample,n_rsrv)  #batch on req
@@ -619,6 +628,8 @@ if __name__ == '__main__':
                     print('Finish sampling',i.id)
                     i.sample_z = i.sampling['pic']
                     wait_to_decode.append(i)
+                    unload_model(state["model"].denoiser)
+                    unload_model(state["model"].model)
                 else:
                     wait_to_sample.append(i)
             n_scheduled = n_scheduled - 1 
