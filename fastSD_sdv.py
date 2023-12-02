@@ -557,7 +557,8 @@ def test(model,sampler=None,options=None):
                 t = time.time()
                 for i in process:
                     out = decode(model, i.sampling['pic'], return_latents=False, filter=None)
-                    perform_save_locally(output, out)  #Save to local file
+                    #perform_save_locally(output, out)  #Save to local file
+                    save_video_as_grid_and_mp4(out, output, T, fps=saving_fps)
                 print('decode:',time.time()-t)
                 exit()
 
@@ -585,7 +586,8 @@ if __name__ == '__main__':
     H = 512
     C = version_dict["C"]
     F = version_dict["f"] 
-    T = 28
+    T = 30
+    test_model = True
 
     options = version_dict["options"]
     options["num_frames"] = T
@@ -594,19 +596,20 @@ if __name__ == '__main__':
 
     input_thread = threading.Thread(target=collect_input)
     input_thread.daemon = True
-    #input_thread.start()
-
     batch_thread = threading.Thread(target=collect_batch, args=(options,sampler))
     batch_thread.daemon = True
-    #batch_thread.start()
 
     load_model(model.denoiser)
     load_model(model.model)
     print('Finish init!')
+    if not test_model:
+        input_thread.start()
+        batch_thread.start()
+    else:
+        test(model,sampler=sampler,options=options)
 
     n_scheduled = 0
     n_rsrv = 0
-    test(model,sampler=sampler,options=options)
     while True:
         r_batch = []
         batch,n_rsrv = orca_select(wait_to_sample,n_rsrv)  #batch on req
