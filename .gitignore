@@ -1,0 +1,20 @@
+# cache 
+__pycache__/
+# model weights
+Llama-2-7b/
+# extensions
+*.egg-info
+*.py[cod]
+
+# envs
+.pt13
+.pt2
+
+# directories
+/checkpoints
+/dist
+/outputs
+/build
+/src
+/lora_weights
+/inputs
