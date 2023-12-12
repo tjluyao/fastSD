@@ -1,4 +1,4 @@
-from llm import Llama
+from llama import Llama
 import time, torch
 
 n_workers = 1

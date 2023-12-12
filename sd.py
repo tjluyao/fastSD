@@ -34,7 +34,387 @@ from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
 from sgm.util import append_dims, default, instantiate_from_config
 
 lowvram_mode = True
+VERSION2SPECS = {
+    "SDXL-base-1.0": {
+        "H": 1024,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "is_legacy": False,
+        "config": "configs/inference/sd_xl_base.yaml",
+        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+    },
+    "SDXL-base-0.9": {
+        "H": 1024,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "is_legacy": False,
+        "config": "configs/inference/sd_xl_base.yaml",
+        "ckpt": "checkpoints/sd_xl_base_0.9.safetensors",
+    },
+    "SD-2.1": {
+        "H": 512,
+        "W": 512,
+        "C": 4,
+        "f": 8,
+        "is_legacy": True,
+        "config": "configs/inference/sd_2_1.yaml",
+        "ckpt": "checkpoints/v2-1_512-ema-pruned.safetensors",
+    },
+    "SD-2.1-768": {
+        "H": 768,
+        "W": 768,
+        "C": 4,
+        "f": 8,
+        "is_legacy": True,
+        "config": "configs/inference/sd_2_1_768.yaml",
+        "ckpt": "checkpoints/v2-1_768-ema-pruned.safetensors",
+    },
+    "SDXL-refiner-0.9": {
+        "H": 1024,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "is_legacy": True,
+        "config": "configs/inference/sd_xl_refiner.yaml",
+        "ckpt": "checkpoints/sd_xl_refiner_0.9.safetensors",
+    },
+    "SDXL-refiner-1.0": {
+        "H": 1024,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "is_legacy": True,
+        "config": "configs/inference/sd_xl_refiner.yaml",
+        "ckpt": "checkpoints/sd_xl_refiner_1.0.safetensors",
+    },
+    "svd": {
+        "T": 14,
+        "H": 576,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "config": "configs/inference/svd.yaml",
+        "ckpt": "checkpoints/svd.safetensors",
+        "options": {
+            "discretization": 1,
+            "cfg": 2.5,
+            "sigma_min": 0.002,
+            "sigma_max": 700.0,
+            "rho": 7.0,
+            "guider": 2,
+            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
+            "num_steps": 25,
+        },
+    },
+    "svd_image_decoder": {
+        "T": 14,
+        "H": 576,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "config": "configs/inference/svd_image_decoder.yaml",
+        "ckpt": "checkpoints/svd_image_decoder.safetensors",
+        "options": {
+            "discretization": 1,
+            "cfg": 2.5,
+            "sigma_min": 0.002,
+            "sigma_max": 700.0,
+            "rho": 7.0,
+            "guider": 2,
+            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
+            "num_steps": 25,
+        },
+    },
+    "svd_xt": {
+        "T": 25,
+        "H": 576,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "config": "configs/inference/svd.yaml",
+        "ckpt": "checkpoints/svd_xt.safetensors",
+        "options": {
+            "discretization": 1,
+            "cfg": 3.0,
+            "min_cfg": 1.5,
+            "sigma_min": 0.002,
+            "sigma_max": 700.0,
+            "rho": 7.0,
+            "guider": 2,
+            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
+            "num_steps": 30,
+            "decoding_t": 14,
+        },
+    },
+    "svd_xt_image_decoder": {
+        "T": 25,
+        "H": 576,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "config": "configs/inference/svd_image_decoder.yaml",
+        "ckpt": "checkpoints/svd_xt_image_decoder.safetensors",
+        "options": {
+            "discretization": 1,
+            "cfg": 3.0,
+            "min_cfg": 1.5,
+            "sigma_min": 0.002,
+            "sigma_max": 700.0,
+            "rho": 7.0,
+            "guider": 2,
+            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
+            "num_steps": 30,
+            "decoding_t": 14,
+        },
+    },
+}
+def get_batch_v(conditioner, 
+                value_dicts, 
+                N: Union[List, ListConfig] = None,
+                device="cuda",
+                T: int = None,
+                additional_batch_uc_fields: List[str] = [],
+                muti_input=False,
+                ):
+    keys = list(set([x.input_key for x in conditioner.embedders]))
+    batch = {}
+    batch_uc = {}
+    
+    standard_dict = value_dicts[0]
+    for key in keys:
+        if key == "txt":
+            prompts = []
+            n_prompts = []
+            for dict in value_dicts:
+                prompts.append(
+                    repeat(dict['prompt'], "1 ... -> b ...", b=dict['num_samples']*dict['T'])
+                    )
+                n_prompts.append(
+                    repeat(dict['negative_prompt'], "1 ... -> b ...", b=dict['num_samples']*dict['T'])
+                    )
+            batch[key] = rearrange(batch[key],'b t ... -> (b t) ...')
+            batch_uc[key] = rearrange(batch_uc[key],'b t ... -> (b t) ...')
+            
+        elif key == "original_size_as_tuple":
+            batch["original_size_as_tuple"] = []
+            for dict in value_dicts:
+                batch["original_size_as_tuple"].append(
+                    torch.tensor([dict["orig_height"], dict["orig_width"]])
+                    .to(device)
+                    .repeat(dict['num_samples']*dict['T'], 1)
+                )
+            batch["original_size_as_tuple"] = torch.cat(batch["original_size_as_tuple"], dim=0)
 
+        elif key == "crop_coords_top_left":
+            batch["crop_coords_top_left"] = []
+            for dict in value_dicts:
+                batch["crop_coords_top_left"].append(
+                    torch.tensor(
+                        [dict["crop_coords_top"], dict["crop_coords_left"]]
+                    )
+                    .to(device)
+                    .repeat(dict['num_samples']*dict['T'], 1)
+                )
+            batch["crop_coords_top_left"] = torch.cat(batch["crop_coords_top_left"], dim=0)
+
+        elif key == "aesthetic_score":
+            batch["aesthetic_score"] = []
+            batch_uc["aesthetic_score"] = []
+            for dict in value_dicts:
+                batch["aesthetic_score"].append(
+                    torch.tensor([dict["aesthetic_score"]]).to(device).repeat(dict['num_samples']*dict['T'], 1)
+                )
+                batch_uc["aesthetic_score"].append(
+                    torch.tensor([dict["negative_aesthetic_score"]]).to(device).repeat(dict['num_samples']*dict['T'], 1)
+                )
+            batch["aesthetic_score"] = torch.cat(batch["aesthetic_score"], dim=0)
+            batch_uc["aesthetic_score"] = torch.cat(batch_uc["aesthetic_score"], dim=0)
+
+        elif key == "target_size_as_tuple":
+            batch["target_size_as_tuple"] = []
+            for dict in value_dicts:
+                batch["target_size_as_tuple"].append(
+                    torch.tensor([dict["target_height"], dict["target_width"]])
+                    .to(device)
+                    .repeat(dict['num_samples']*dict['T'], 1)
+                )
+            batch["target_size_as_tuple"] = torch.cat(batch["target_size_as_tuple"], dim=0)
+
+        elif key == "fps":
+            batch["fps"] = []
+            for dict in value_dicts:
+                batch["fps"].append(
+                    torch.tensor([dict["fps"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                )
+            batch["fps"] = torch.cat(batch[key], dim=0)
+
+        elif key == "fps_id":
+            batch[key] = []
+            if muti_input:
+                batch_uc[key] = []
+                for dict in value_dicts:
+                    tensor = torch.tensor([dict["fps_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                    batch[key].append(tensor)
+                    batch_uc[key].append(tensor)
+            else:
+                for dict in value_dicts:
+                    tensor = torch.tensor([dict["fps_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                    batch[key].append(tensor)
+                batch[key] = torch.cat(batch[key], dim=0)
+
+        elif key == "motion_bucket_id":
+            batch[key] = []
+            if muti_input:
+                batch_uc[key] = []
+                for dict in value_dicts:
+                    tensor = torch.tensor([dict["motion_bucket_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                    batch[key].append(tensor)
+                    batch_uc[key].append(tensor)
+            else:
+                for dict in value_dicts:
+                    tensor = torch.tensor([dict["motion_bucket_id"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                    batch[key].append(tensor)
+                batch[key] = torch.cat(batch[key], dim=0)
+
+        elif key == "pool_image":
+            batch[key] = []
+            for dict in value_dicts:
+                batch[key].append(
+                    repeat(dict[key], "1 ... -> b ...", b=dict['num_samples']*dict['T']).to(
+                device, dtype=torch.half)
+                )
+            batch[key] = rearrange(batch[key],'b t ... -> (b t) ...')
+
+        elif key == "cond_aug":
+            batch[key] = []
+            if muti_input:
+                batch_uc[key] = []
+                for dict in value_dicts:
+                    tensor = torch.tensor([dict["cond_aug"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                    batch[key].append(tensor)
+                    batch_uc[key].append(tensor)
+            else:
+                for dict in value_dicts:
+                    tensor = torch.tensor([dict["cond_aug"]]).to(device).repeat(dict['num_samples']*dict['T'])
+                    batch[key].append(tensor)
+                batch[key] = torch.cat(batch[key], dim=0)
+
+        elif key == "cond_frames":
+            batch[key] = []
+            for dict in value_dicts:
+                batch[key].append(
+                    repeat(dict["cond_frames"], "1 ... -> b ...", b=dict['num_samples'])
+                )
+            batch[key] = rearrange(batch[key],'b t ... -> (b t) ...')
+
+        elif key == "cond_frames_without_noise":
+            batch[key] = []
+            for dict in value_dicts:
+                batch[key].append(
+                    repeat(dict["cond_frames_without_noise"], "1 ... -> b ...", b=dict['num_samples'])
+                )
+            batch[key] = rearrange(batch[key],'b t ... -> (b t) ...')
+        else:
+            batch[key] = standard_dict[key]
+
+    if T is not None:
+        batch["num_video_frames"] = T
+
+    for key in batch.keys():
+        if key not in batch_uc and isinstance(batch[key], torch.Tensor):
+            batch_uc[key] = torch.clone(batch[key])
+        elif key in additional_batch_uc_fields and key not in batch_uc:
+            batch_uc[key] = copy.copy(batch[key])
+    return batch, batch_uc
+
+def get_condition(
+        state, 
+        value_dicts,
+        sampler = None,
+        force_uc_zero_embeddings: Optional[List] = None,
+        force_cond_zero_embeddings: Optional[List] = None,
+        batch2model_input: List = None,
+        T=None,
+        C=None,
+        H=None,
+        W=None,
+        F=None,
+        additional_batch_uc_fields=None,
+        muti_input=False,
+        ):
+    model = state.get("model")
+    T = state.get("T", T)
+    C = state.get("C", C)
+    H = state.get("H", H)
+    W = state.get("W", W)
+    F = state.get("F", F)
+    print("Getting condition for "+str(len(value_dicts))+" videos")
+    force_uc_zero_embeddings = default(force_uc_zero_embeddings, [])
+    batch2model_input = default(batch2model_input, [])
+    additional_batch_uc_fields = default(additional_batch_uc_fields, [])
+    with torch.no_grad():
+        with autocast("cuda"):
+            with model.ema_scope():
+                num_batch = sum([obj['num_samples'] for obj in value_dicts])
+                num_frames = sum([obj['T'] for obj in value_dicts])
+                num_samples = [num_batch, T] if T is not None else [num_batch]
+                load_model(model.conditioner)
+                batch, batch_uc = get_batch_v(
+                    model.conditioner,
+                    value_dicts,
+                    num_samples,
+                    T=T,
+                    additional_batch_uc_fields=additional_batch_uc_fields,
+                    muti_input=muti_input,
+                )
+                c, uc = model.conditioner.get_unconditional_conditioning(
+                    batch,
+                    batch_uc=batch_uc,
+                    force_uc_zero_embeddings=force_uc_zero_embeddings,
+                    force_cond_zero_embeddings=force_cond_zero_embeddings,
+                    muti_input=muti_input,
+                )
+                
+
+                unload_model(model.conditioner)
+                for k in c:
+                    if not k == "crossattn":
+                        c[k], uc[k] = map(
+                            lambda y: y[k][: math.prod(num_samples)].to("cuda"), (c, uc)
+                        )
+                    if k in ["crossattn", "concat"] and T is not None:
+                        list_c = []
+                        list_uc = []
+                        t = 0
+                        for dict in value_dicts:
+                            x = repeat(c[k][t:t+dict['num_samples'],], "b ... -> b t ...", t=dict['T'])
+                            x = rearrange(x, "b t ... -> (b t) ...", t=dict['T'])
+                            list_c.append(x)
+                            x = repeat(uc[k][t:t+dict['num_samples'],], "b ... -> b t ...", t=dict['T'])
+                            x = rearrange(x, "b t ... -> (b t) ...", t=dict['T'])
+                            list_uc.append(x)
+                            t = t + dict['num_samples']
+                        c[k] = torch.cat(list_c, dim=0)
+                        uc[k] = torch.cat(list_uc, dim=0)
+
+                additional_model_inputs = {}
+                for k in batch2model_input:
+                    if k == "image_only_indicator":
+                        assert T is not None
+
+                        if isinstance(sampler.guider, (VanillaCFG, LinearPredictionGuider)):
+                            additional_model_inputs[k] = torch.zeros(num_batch*2, T).to("cuda")
+                        else:
+                            additional_model_inputs[k] = torch.zeros(num_samples).to("cuda")
+                    else:
+                        additional_model_inputs[k] = batch[k]
+
+                shape = (math.prod(num_samples), C, H // F, W // F)
+                randn = torch.randn(shape).to("cuda")
+                return randn, c, uc, additional_model_inputs
+            
 def init_model(version_dict, load_ckpt=True, load_filter=True, verbose=True):
     state = dict()
     config = version_dict["config"]
