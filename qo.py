@@ -1,6 +1,7 @@
 import time
 import threading
 import torch
+import peft
 from pytorch_lightning import seed_everything
 from llama.model import ModelArgs as llama_args
 from sd import *
@@ -21,12 +22,17 @@ class request(object):
         self.buffer = model.tokenizer.encode(self.input, bos=True, eos=False)
 
 class sd_request(object):
-    def __init__(self, 
-                 state: dict,
-                 steps: int = 10,
-                 img_path: str = None,
-                 num_samples = 1,
-                 ) -> None:
+    def __init__(
+            self, 
+            state: dict,
+            steps: int = 10,
+            is_video: bool = False,
+            prompt: str = None,
+            negative_prompt: str = '',
+            img_path: str = None,
+            lora_pth: str = None,
+            num_samples = 1,
+            ) -> None:
         self.id = time.time()
         self.time = time.time()
         self.state = 0
@@ -34,30 +40,48 @@ class sd_request(object):
         keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
         self.sampling = {}
         self.num_samples = num_samples
-        self.num_frames = state['T']
+        self.num_frames = state['T'] if is_video else 1
         self.num = self.num_samples * self.num_frames
         W = state['W']
         H = state['H']
-        self.value_dict = self.get_valuedict(keys, img_path, W, H)
+        
         self.sample_z = None
+        if lora_pth:
+            self.lora_dict= self.get_lora(lora_pth)
+        if img_path:
+            self.img, self.w, self.h = self.load_img(path=img_path, n=self.num)
+
+        self.value_dict = self.get_valuedict(keys, img_path, W, H, is_video=is_video, prompt=prompt, negative_prompt=negative_prompt)
         pass
 
-    def get_valuedict(self,keys,img,W,H):
-        value_dict = init_embedder_options(
-        keys,
-        {},
-        )
-        img = load_img_for_prediction(W, H, display=False, key=img)
-        cond_aug = 0.02
-        value_dict["image_only_indicator"] = 0
-        value_dict["cond_frames_without_noise"] = img
-        value_dict["cond_frames"] = img + cond_aug * torch.randn_like(img)
-        value_dict["cond_aug"] = cond_aug
-        value_dict['num_samples'] = self.num_samples
-        value_dict['T'] = self.num_frames
+    def get_valuedict(self,keys,img,W,H,is_video=False, prompt=None, negative_prompt=None):
+        if is_video:
+            value_dict = init_embedder_options(
+            keys,
+            {},
+            )
+            img = load_img_for_prediction(W, H, display=False, key=img)
+            cond_aug = 0.02
+            value_dict["image_only_indicator"] = 0
+            value_dict["cond_frames_without_noise"] = img
+            value_dict["cond_frames"] = img + cond_aug * torch.randn_like(img)
+            value_dict["cond_aug"] = cond_aug
+            value_dict['num_samples'] = self.num_samples
+            value_dict['T'] = self.num_frames
+        else:
+            init_dict = {"orig_width": W,"orig_height": H,"target_width": W,"target_height": H,}
+            value_dict = init_embedder_options(
+            keys,
+            init_dict,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            )
+            value_dict['num_samples'] = self.num_samples
+            value_dict['T'] = self.num_frames
+            value_dict["num"] = self.num
         return value_dict
     
-    def load_img(self, path=None, n=1, display=False, device="cuda"):
+    def load_img(self, path=None, display=False, device="cuda"):
         assert path is not None
         image = Image.open(path)
         if not image.mode == "RGB":
@@ -71,6 +95,15 @@ class sd_request(object):
         image = np.array(image)[None].transpose(0, 3, 1, 2)
         image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
         return image.to(device),w ,h 
+    
+    def get_lora(self, lora_pth):
+        lora_dict = load_safetensors(lora_pth)
+        try:
+            rank = peft.LoraConfig.from_pretrained(lora_pth).r
+        except:
+            print('Rank not found')
+            rank = 8
+        return {'weights':lora_dict, 'rank':rank}
 
 class query_optimazer:
     def __init__(self,
@@ -115,8 +148,8 @@ class query_optimazer:
             state['H'] = 512
             state['C'] = version_dict['C']
             state['F'] = version_dict['f']
-            state['T'] = 6
-            state['options'] = version_dict['options']
+            state['T'] = 6 if model_name in ['sdv'] else None
+            state['options'] = version_dict.get('options', {})
             state['options']["num_frames"] = state['T']
             sampler = init_sampling(options=state['options'],steps=steps)
             state['sampler'] = sampler
@@ -186,7 +219,7 @@ class query_optimazer:
                     self.wait_runtime.append(item)
             self.n_scheduled = self.n_scheduled - 1 
 
-    def check_prepost(self, state):
+    def check_prepost(self):
         if len(self.wait_preprocess) >= self.batch_option:
             print('Start encoding')
             encode_process = self.wait_preprocess
@@ -202,8 +235,10 @@ class query_optimazer:
             self.wait_postprocess = []
             samples_z = torch.cat([i.sampling['pic'] for i in decode_process], dim=0)
             samples = self.postprocess(samples_z, self.state)
-            #perform_save_locally(self.output_path, samples)  #Save to local file
-            save_video_as_grid_and_mp4(samples, self.output_path, self.state['T'], self.state['saving_fps'])
+            if self.model_name not in ['svd']:
+                perform_save_locally(self.output_path, samples)  #Save to local file
+            if self.state['T']:
+                save_video_as_grid_and_mp4(samples, self.output_path, self.state['T'], self.state['saving_fps'])
             for i in decode_process:
                 print('Saved',i.id)
                 decode_process.remove(i)
@@ -218,12 +253,13 @@ class query_optimazer:
             with autocast("cuda"):
                 with model.ema_scope():
                     value_dicts = [i.value_dict for i in encode_process]
+                    batch2model_input = ["num_video_frames", "image_only_indicator"] if T else []
                     z, c, uc, additional_model_inputs= get_condition(
                         state,
                         value_dicts, 
                         sampler=sampler,
                         T=T,
-                        batch2model_input=["num_video_frames", "image_only_indicator"],
+                        batch2model_input=batch2model_input,
                         force_uc_zero_embeddings=options.get("force_uc_zero_embeddings", None),
                         force_cond_zero_embeddings=options.get("force_cond_zero_embeddings", None),
                         muti_input=muti_input,
@@ -316,6 +352,13 @@ class query_optimazer:
                         elif key == "num_video_frames":
                             additional_model_inputs[key] = T
 
+                    lora_dicts = []
+                    for d in sampling:
+                        for i in range(d.num):
+                            lora_dicts.append(d.lora_dict)  
+                    lora_dicts = lora_dicts * 2
+                    additional_model_inputs['lora_dicts'] = lora_dicts
+
                     def denoiser(input, sigma, c):
                         return state["model"].denoiser(state["model"].model, input, sigma, c, **additional_model_inputs)
                     samples = sampler.sampler_step_g(begin,end,denoiser,x,cond,uc) if isinstance(sampler, EDMSampler) else sampler.sampler_step(begin,end,denoiser,x,cond,uc)
@@ -340,17 +383,19 @@ def get_usr_input():
                 cache_size = (llama_args.n_layers ,1, llama_args.max_seq_len, llama_args.n_heads // fs_init.get_model_parallel_world_size(), llama_args.dim // llama_args.n_heads)
                 req = request(usr_input,optimatizer.model,cache_size=cache_size)
             elif optimatizer.model_name in VERSION2SPECS:
-                req = sd_request(state=optimatizer.state,img_path='inputs/'+usr_input+'.jpg')
+                #req = sd_request(state=optimatizer.state,img_path='inputs/'+usr_input+'.jpg')
+                req = sd_request(state=optimatizer.state,lora_pth='lora_weights/pixel-art-xl.safetensors',prompt=usr_input)
             else:
                 raise NotImplementedError
             optimatizer.add_request(req)
 
 if __name__ == "__main__":
     #optimatizer = query_optimazer('llama')
-    optimatizer = query_optimazer('svd')
+    #optimatizer = query_optimazer('svd')
+    optimatizer = query_optimazer('SDXL-lora-1.0')
     input_thread = threading.Thread(target=get_usr_input)
     input_thread.daemon = True
     input_thread.start()
     while True:
-        optimatizer.check_prepost(optimatizer.model)
+        optimatizer.check_prepost()
         optimatizer.runtime(optimatizer.model)

@@ -44,6 +44,15 @@ VERSION2SPECS = {
         "config": "configs/inference/sd_xl_base.yaml",
         "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
     },
+    "SDXL-lora-1.0": {
+        "H": 1024,
+        "W": 1024,
+        "C": 4,
+        "f": 8,
+        "is_legacy": False,
+        "config": "configs/inference/sd_xl_lora.yaml",
+        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+    },
     "SDXL-base-0.9": {
         "H": 1024,
         "W": 1024,
@@ -170,7 +179,7 @@ VERSION2SPECS = {
         },
     },
 }
-def get_batch_v(conditioner, 
+def get_batch(conditioner, 
                 value_dicts, 
                 N: Union[List, ListConfig] = None,
                 device="cuda",
@@ -188,14 +197,11 @@ def get_batch_v(conditioner,
             prompts = []
             n_prompts = []
             for dict in value_dicts:
-                prompts.append(
-                    repeat(dict['prompt'], "1 ... -> b ...", b=dict['num_samples']*dict['T'])
-                    )
-                n_prompts.append(
-                    repeat(dict['negative_prompt'], "1 ... -> b ...", b=dict['num_samples']*dict['T'])
-                    )
-            batch[key] = rearrange(batch[key],'b t ... -> (b t) ...')
-            batch_uc[key] = rearrange(batch_uc[key],'b t ... -> (b t) ...')
+                prompts = prompts + [dict['prompt']] * dict['num']
+                n_prompts = n_prompts + [dict['negative_prompt']] * dict['num']
+            batch["txt"] = prompts
+            batch_uc["txt"] = n_prompts
+
             
         elif key == "original_size_as_tuple":
             batch["original_size_as_tuple"] = []
@@ -358,10 +364,10 @@ def get_condition(
         with autocast("cuda"):
             with model.ema_scope():
                 num_batch = sum([obj['num_samples'] for obj in value_dicts])
-                num_frames = sum([obj['T'] for obj in value_dicts])
+                #num_frames = sum([obj['T'] for obj in value_dicts])
                 num_samples = [num_batch, T] if T is not None else [num_batch]
                 load_model(model.conditioner)
-                batch, batch_uc = get_batch_v(
+                batch, batch_uc = get_batch(
                     model.conditioner,
                     value_dicts,
                     num_samples,
@@ -977,7 +983,7 @@ def do_sample(
                     return samples, samples_z
                 return samples
 
-def get_batch(
+def get_batc_old(
     conditioner,
     value_dict: dict,
     N: Union[List, ListConfig],
