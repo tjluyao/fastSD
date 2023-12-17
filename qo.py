@@ -130,13 +130,18 @@ class query_optimazer:
 
     def init_model(self,model_name,**kwargs):
         if model_name == 'llama':
+            
             from llama import Llama
+            '''
             generator = Llama.build(
                 ckpt_dir='Llama-2-7b/',
                 tokenizer_path='Llama-2-7b/tokenizer.model',
                 max_seq_len=128,
                 max_batch_size=4,
             )
+            '''
+            from query_optimizer import Large_model
+            generator = Large_model()
             print('Model loaded')
             return generator
         
@@ -165,7 +170,7 @@ class query_optimazer:
         
     def add_request(self,req):
         if self.model_name == 'llama':
-            self.waiting_runtime.append(req)
+            self.wait_runtime.append(req)
         elif self.model_name in VERSION2SPECS:
             self.wait_preprocess.append(req)
         else:
@@ -186,7 +191,6 @@ class query_optimazer:
                         break
                     self.n_rsrv = new_n_rsrv
             batch.append(item)
-            item.state = 1
         return batch
     
     def runtime(self, model, **kwargs):
@@ -390,9 +394,9 @@ def get_usr_input():
             optimatizer.add_request(req)
 
 if __name__ == "__main__":
-    #optimatizer = query_optimazer('llama')
+    optimatizer = query_optimazer('llama')
     #optimatizer = query_optimazer('svd')
-    optimatizer = query_optimazer('SDXL-lora-1.0')
+    #optimatizer = query_optimazer('SDXL-lora-1.0')
     input_thread = threading.Thread(target=get_usr_input)
     input_thread.daemon = True
     input_thread.start()
