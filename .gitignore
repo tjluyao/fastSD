@@ -1,7 +1,6 @@
 # cache 
 __pycache__/
-# model weights
-Llama-2-7b/
+
 # extensions
 *.egg-info
 *.py[cod]
