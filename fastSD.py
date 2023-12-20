@@ -1,5 +1,5 @@
 from pytorch_lightning import seed_everything
-from helpers import *
+from sd import *
 from sgm.modules.diffusionmodules.sampling import *
 import time
 import threading
