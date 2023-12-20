@@ -140,7 +140,7 @@ class query_optimazer:
                 max_batch_size=4,
             )
             '''
-            from query_optimizer import Large_model
+            from llama_generator import Large_model
             generator = Large_model()
             print('Model loaded')
             return generator
