@@ -5,9 +5,10 @@ import peft
 from pytorch_lightning import seed_everything
 from llama.model import ModelArgs as llama_args
 from sd import *
+from req_llama import init_llava, llava_req
 import fairscale.nn.model_parallel.initialize as fs_init
 from sgm.modules.diffusionmodules.sampling import EDMSampler
-
+from punica import BatchLenInfo, BatchedKvCache
 class request(object):
     def __init__(self,input,model,cache_size=None) -> None:
         self.input = input
@@ -20,6 +21,19 @@ class request(object):
             self.cache_v = torch.zeros(cache_size)
 
         self.buffer = model.tokenizer.encode(self.input, bos=True, eos=False)
+
+class llama_request(object):
+    def __init__(self,input,tokenizer) -> None:
+        self.input = input
+        self.time = time.time()
+        self.max_tokens = 128
+        self.state = 0   # 0 refers to INITIATION
+        self.buffer = []
+
+        tokens = tokenizer(self.input, return_tensors="pt")
+        self.buffer = tokens.input_ids
+        from transformers import DynamicCache
+        self.cache = DynamicCache()
 
 class sd_request(object):
     def __init__(
@@ -130,7 +144,6 @@ class query_optimazer:
 
     def init_model(self,model_name,**kwargs):
         if model_name == 'llama':
-            
             from llama import Llama
             '''
             generator = Llama.build(
@@ -144,6 +157,26 @@ class query_optimazer:
             generator = Large_model()
             print('Model loaded')
             return generator
+        elif model_name == 'vicuna':
+            from transformers import LlamaForCausalLM, AutoTokenizer
+            model = LlamaForCausalLM.from_pretrained('./checkpoints/llava-v1.5-7b')
+            tokenizer = AutoTokenizer.from_pretrained('./checkpoints/llava-v1.5-7b')
+            self.tokenizer = tokenizer
+            return model
+        
+        elif model_name == 'llava':
+            model, self.tokenizer, self.image_processor = init_llava('./checkpoints/llava-v1.5-7b')
+            self.device = model.device
+            from punica import KvPool
+            self.kv_pool = KvPool(
+                num_layers=model.config.num_hidden_layers,
+                num_heads=model.config.num_attention_heads,
+                head_dim=model.config.hidden_size // model.config.num_attention_heads,
+                page_len=16,
+                dtype=torch.float16,
+                device=model.device,
+            )
+            return model
         
         elif model_name in VERSION2SPECS:
             version_dict = VERSION2SPECS[model_name]
@@ -169,8 +202,9 @@ class query_optimazer:
             raise NotImplementedError
         
     def add_request(self,req):
-        if self.model_name == 'llama':
+        if self.model_name in ['llama','llava','vicuna']:
             self.wait_runtime.append(req)
+
         elif self.model_name in VERSION2SPECS:
             self.wait_preprocess.append(req)
         else:
@@ -202,6 +236,13 @@ class query_optimazer:
                 self.wait_runtime.remove(item)
             if self.model_name == 'llama':
                 r_batch = model.generate_iter_cache(batch) if use_cache else model.generate_iter(batch)
+
+            elif self.model_name == 'vicuna':
+                r_batch = self.txt_iterate(batch)
+
+            elif self.model_name == 'llava':
+                r_batch = self.llava_iterate(batch)
+
             elif self.model_name in VERSION2SPECS:
                 r_batch = self.sample(batch, self.state)
             else:
@@ -216,13 +257,70 @@ class query_optimazer:
                         print('Finish!',item.time,id(item.cache_k))
                         print(model.tokenizer.decode(item.buffer)+'\n')
                         del item
+                    elif self.model_name == 'vicuna':
+                        print('Finish!',item.time)
+                        print(self.tokenizer.decode(item.buffer)+'\n')
+                        del item
+                    elif self.model_name == 'llava':
+                        print('Finish!',item.time)
+                        txt = self.tokenizer.decode(
+                            item.generator.remove_unvalid(item.generator.output_ids),
+                            skip_special_tokens=True,
+                            spaces_between_special_tokens=False,
+                            clean_up_tokenization_spaces=True,
+                        )
+                        print(txt+'\n')
+                        del item
                     elif self.model_name in VERSION2SPECS:
                         self.wait_postprocess.append(item)
                 else:
                     item.state = 2
+                    #print(self.tokenizer.batch_decode(item.buffer,skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]+'\n')
                     self.wait_runtime.append(item)
             self.n_scheduled = self.n_scheduled - 1 
 
+    def txt_iterate(self, batch):
+        for item in batch:
+            item.buffer = self.model.generate(
+                input_ids=item.buffer,
+                use_cache=True,
+                past_key_values=item.cache,
+                max_length=len(item.buffer[0]) + 1,
+            )
+            if len(item.buffer[0]) >= item.max_tokens:
+                item.state = 3
+                item.buffer = item.buffer[:item.max_tokens]
+                item.cache = None
+        return batch
+    
+    def llava_iterate(self, batch):
+        next_ids = []
+        image_tensors = []
+        kvcaches = []
+        decode_input_ids = []
+        for item in batch:
+            item.kvcache.acquire_one()
+            next_ids.append(item.next_token_id)
+            image_tensors.append(item.image_tensor)
+            kvcaches.append(item.kvcache)
+            decode_input_ids.append(item.generator.output_ids[-1])
+        logits, _ = self.model(
+            input_ids=torch.tensor(next_ids, dtype=torch.long, device=self.device).unsqueeze(0),
+            blen=BatchLenInfo([], len(decode_input_ids), self.device),
+            prefill_kv=None,
+            decode_kv=BatchedKvCache(kvcaches),
+            images=image_tensors,
+        )
+        #print(logits.shape)
+        for i, item in enumerate(batch):
+            item.next_token_id = item.generator.get_next_token_id(logits.squeeze(0)[i].unsqueeze(0))
+            item.generator.append_token(item.next_token_id)
+            if item.generator.is_stop():
+                item.state = 3
+                item.cache = None
+
+        return batch
+    
     def check_prepost(self):
         if len(self.wait_preprocess) >= self.batch_option:
             print('Start encoding')
@@ -386,17 +484,30 @@ def get_usr_input():
             if optimatizer.model_name == 'llama':
                 cache_size = (llama_args.n_layers ,1, llama_args.max_seq_len, llama_args.n_heads // fs_init.get_model_parallel_world_size(), llama_args.dim // llama_args.n_heads)
                 req = request(usr_input,optimatizer.model,cache_size=cache_size)
+
+            elif optimatizer.model_name == 'vicuna':
+                req = llama_request(usr_input,optimatizer.tokenizer)
+
+            elif optimatizer.model_name == 'llava':
+                req = llava_req(usr_input,
+                                img_path='inputs/01.jpg',
+                                tokenizer=optimatizer.tokenizer,
+                                model=optimatizer.model,
+                                config=optimatizer.model.config,
+                                image_processor=optimatizer.image_processor,
+                                kv_pool=optimatizer.kv_pool,
+                                )
+
             elif optimatizer.model_name in VERSION2SPECS:
                 #req = sd_request(state=optimatizer.state,img_path='inputs/'+usr_input+'.jpg')
                 req = sd_request(state=optimatizer.state,lora_pth='lora_weights/pixel-art-xl.safetensors',prompt=usr_input)
             else:
                 raise NotImplementedError
+            print('New request')
             optimatizer.add_request(req)
 
 if __name__ == "__main__":
-    optimatizer = query_optimazer('llama')
-    #optimatizer = query_optimazer('svd')
-    #optimatizer = query_optimazer('SDXL-lora-1.0')
+    optimatizer = query_optimazer('llava')
     input_thread = threading.Thread(target=get_usr_input)
     input_thread.daemon = True
     input_thread.start()
