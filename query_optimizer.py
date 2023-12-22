@@ -8,7 +8,8 @@ from sd import *
 from req_llama import init_llava, llava_req
 import fairscale.nn.model_parallel.initialize as fs_init
 from sgm.modules.diffusionmodules.sampling import EDMSampler
-from punica import BatchLenInfo, BatchedKvCache
+from req_llamalora import init_Llama_lora, llama_lora_req, init_lora
+from punica import BatchLenInfo, BatchedKvCache, BatchedLlamaLoraWeight, KvPool, LlamaLoraWeight, KvCache
 class request(object):
     def __init__(self,input,model,cache_size=None) -> None:
         self.input = input
@@ -178,6 +179,19 @@ class query_optimazer:
             )
             return model
         
+        elif model_name == 'lora':
+            lora_ids = kwargs.get('lora_ids', [])
+            model, tokenizer, model_config, kvpool = init_Llama_lora('./checkpoints/llava-v1.5-7b', 'cuda:0')
+            self.tokenizer = tokenizer
+            self.model_config = model_config
+            self.kvpool = kvpool
+            self.device = model.device
+            self.lora_weights = init_lora(lora_ids, 
+                                          model_config, 
+                                          device=self.device,)
+            return model
+            
+        
         elif model_name in VERSION2SPECS:
             version_dict = VERSION2SPECS[model_name]
             state = init_model(version_dict, load_filter=True)
@@ -202,7 +216,7 @@ class query_optimazer:
             raise NotImplementedError
         
     def add_request(self,req):
-        if self.model_name in ['llama','llava','vicuna']:
+        if self.model_name in ['llama','llava','vicuna','lora']:
             self.wait_runtime.append(req)
 
         elif self.model_name in VERSION2SPECS:
@@ -243,6 +257,9 @@ class query_optimazer:
             elif self.model_name == 'llava':
                 r_batch = self.llava_iterate(batch)
 
+            elif self.model_name == 'lora':
+                r_batch = self.lora_iterate(batch)
+
             elif self.model_name in VERSION2SPECS:
                 r_batch = self.sample(batch, self.state)
             else:
@@ -271,6 +288,11 @@ class query_optimazer:
                         )
                         print(txt+'\n')
                         del item
+                    elif self.model_name == 'lora':
+                        print('Finish!',item.time)
+                        print(item.generator.decode_tokens())
+                        del item
+
                     elif self.model_name in VERSION2SPECS:
                         self.wait_postprocess.append(item)
                 else:
@@ -319,6 +341,55 @@ class query_optimazer:
                 item.state = 3
                 item.cache = None
 
+        return batch
+    
+    def lora_iterate(self, batch):
+        prefill_input_ids, prefill_lens, prefill_kv = [], [], []
+        decode_input_ids, decode_kv = [], []
+        lora_ids, lora_lens = [], []
+        for item in batch:
+            reqctx = item.generator
+            if reqctx.is_prefill():
+                prefill_input_ids.extend(reqctx.output_ids)
+                prefill_lens.append(len(reqctx.output_ids))
+                prefill_kv.append(reqctx.kvcache)
+            else:
+                decode_input_ids.append(reqctx.output_ids[-1])
+                decode_kv.append(reqctx.kvcache)
+                reqctx.kvcache.acquire_one()
+            if lora_ids and lora_ids[-1] == reqctx.lora_id:
+                lora_lens[-1] += 1
+            else:
+                lora_ids.append(reqctx.lora_id)
+                lora_lens.append(1)
+        input_ids = torch.tensor(
+                prefill_input_ids + decode_input_ids,
+                dtype=torch.long,
+                device=self.device,
+            )
+        blen = BatchLenInfo(prefill_lens, len(decode_input_ids), self.device)
+        prefill_kv = BatchedKvCache(prefill_kv) if prefill_kv else None
+        decode_kv = BatchedKvCache(decode_kv) if decode_kv else None
+        lora = BatchedLlamaLoraWeight(
+            [self.lora_weights[id] for id in lora_ids], lora_lens
+        )
+        logits, _ = self.model(input_ids, blen, prefill_kv, decode_kv, lora)
+        if prefill_kv:
+            if decode_kv:
+                logits = torch.cat(
+                    [logits[blen.indptr[1:] - 1], logits[blen.doff :]]
+                )
+            else:
+                logits = logits[blen.indptr[1:] - 1]
+
+        for i, item in enumerate(batch):
+            reqctx = item.generator
+            next_token_id = reqctx.get_next_token_id(logits[i].unsqueeze(0))
+            reqctx.append_token(next_token_id)
+            if reqctx.is_stop():
+                item.state = 3
+                reqctx.kvcache.release()
+                reqctx.kvcache = None
         return batch
     
     def check_prepost(self):
@@ -497,17 +568,25 @@ def get_usr_input():
                                 image_processor=optimatizer.image_processor,
                                 kv_pool=optimatizer.kv_pool,
                                 )
-
+            elif optimatizer.model_name == 'lora':
+                req = llama_lora_req(usr_input, 
+                                     model_path='./checkpoints/llava-v1.5-7b', 
+                                     device='cuda:0', 
+                                     kvpool=optimatizer.kvpool, 
+                                     model_config=optimatizer.model_config, 
+                                     tokenizer=optimatizer.tokenizer, 
+                                     lora_id='empty',
+                                     )
             elif optimatizer.model_name in VERSION2SPECS:
                 #req = sd_request(state=optimatizer.state,img_path='inputs/'+usr_input+'.jpg')
                 req = sd_request(state=optimatizer.state,lora_pth='lora_weights/pixel-art-xl.safetensors',prompt=usr_input)
             else:
                 raise NotImplementedError
-            print('New request')
+            print('New request',req.time)
             optimatizer.add_request(req)
 
 if __name__ == "__main__":
-    optimatizer = query_optimazer('llava')
+    optimatizer = query_optimazer('lora')
     input_thread = threading.Thread(target=get_usr_input)
     input_thread.daemon = True
     input_thread.start()
