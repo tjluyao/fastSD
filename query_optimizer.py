@@ -70,7 +70,7 @@ class query_optimazer:
         
         elif model_name == 'lora':
             lora_ids = kwargs.get('lora_ids', [])
-            model, tokenizer, model_config, kvpool = init_Llama_lora('./checkpoints/llava-v1.5-7b', 'cuda:0')
+            model, tokenizer, model_config, kvpool = init_Llama_lora('./checkpoints/Llama-2-7b-chat-hf', 'cuda:0')
             self.tokenizer = tokenizer
             self.model_config = model_config
             self.kvpool = kvpool
