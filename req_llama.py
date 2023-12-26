@@ -28,5 +28,6 @@ class hf_llama_request(object):
         from transformers import DynamicCache
         self.cache = DynamicCache()
 
-def get_cache_size(model):
+def get_cache_size():
     size = (llama_args.n_layers ,1, llama_args.max_seq_len, llama_args.n_heads // fs_init.get_model_parallel_world_size(), llama_args.dim // llama_args.n_heads)
+    return size
