@@ -9,7 +9,8 @@ from req_llama import init_llava, llava_req
 import fairscale.nn.model_parallel.initialize as fs_init
 from sgm.modules.diffusionmodules.sampling import EDMSampler
 from req_llamalora import init_Llama_lora, llama_lora_req, init_lora
-from punica import BatchLenInfo, BatchedKvCache, BatchedLlamaLoraWeight, KvPool, LlamaLoraWeight, KvCache
+from punica import BatchLenInfo, BatchedKvCache, BatchedLlamaLoraWeight, KvPool
+
 class request(object):
     def __init__(self,input,model,cache_size=None) -> None:
         self.input = input
@@ -125,9 +126,10 @@ class query_optimazer:
                  model_name: str = 'llama',
                  output_path: str = 'outputs/',
                  seed: int = 49,
+                 **kwargs
                  ):
         self.model_name = model_name
-        self.model = self.init_model(model_name)
+        self.model = self.init_model(model_name,**kwargs)
         
         self.output_path = output_path
         self.max_batch_size = 4
@@ -168,7 +170,6 @@ class query_optimazer:
         elif model_name == 'llava':
             model, self.tokenizer, self.image_processor = init_llava('./checkpoints/llava-v1.5-7b')
             self.device = model.device
-            from punica import KvPool
             self.kv_pool = KvPool(
                 num_layers=model.config.num_hidden_layers,
                 num_heads=model.config.num_attention_heads,
@@ -569,13 +570,16 @@ def get_usr_input():
                                 kv_pool=optimatizer.kv_pool,
                                 )
             elif optimatizer.model_name == 'lora':
-                req = llama_lora_req(usr_input, 
-                                     model_path='./checkpoints/llava-v1.5-7b', 
-                                     device='cuda:0', 
+                req = llama_lora_req(usr_input,  
                                      kvpool=optimatizer.kvpool, 
-                                     model_config=optimatizer.model_config, 
                                      tokenizer=optimatizer.tokenizer, 
-                                     lora_id='empty',
+                                     lora_id='Chinese',
+                                     )
+                optimatizer.add_request(req)
+                req = llama_lora_req(usr_input, 
+                                     kvpool=optimatizer.kvpool, 
+                                     tokenizer=optimatizer.tokenizer, 
+                                     lora_id='fin',
                                      )
             elif optimatizer.model_name in VERSION2SPECS:
                 #req = sd_request(state=optimatizer.state,img_path='inputs/'+usr_input+'.jpg')
@@ -586,7 +590,7 @@ def get_usr_input():
             optimatizer.add_request(req)
 
 if __name__ == "__main__":
-    optimatizer = query_optimazer('lora')
+    optimatizer = query_optimazer('lora',lora_ids=['fin','Chinese'])
     input_thread = threading.Thread(target=get_usr_input)
     input_thread.daemon = True
     input_thread.start()
