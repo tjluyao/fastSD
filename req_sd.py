@@ -3,11 +3,10 @@ import math
 import os
 from glob import glob
 from typing import Dict, List, Optional, Tuple, Union
-
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
+import peft
 import torchvision.transforms as TT
 from einops import rearrange, repeat
 from imwatermark import WatermarkEncoder
@@ -34,6 +33,91 @@ from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
 from sgm.util import append_dims, default, instantiate_from_config
 
 lowvram_mode = True
+
+class sd_request(object):
+    def __init__(
+            self, 
+            state: dict,
+            steps: int = 10,
+            is_video: bool = False,
+            prompt: str = None,
+            negative_prompt: str = '',
+            img_path: str = None,
+            lora_pth: str = None,
+            num_samples = 1,
+            ) -> None:
+        self.id = time.time()
+        self.time = time.time()
+        self.state = 0
+        self.steps = steps
+        keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
+        self.sampling = {}
+        self.num_samples = num_samples
+        self.num_frames = state['T'] if is_video else 1
+        self.num = self.num_samples * self.num_frames
+        W = state['W']
+        H = state['H']
+        
+        self.sample_z = None
+        if lora_pth:
+            self.lora_dict= self.get_lora(lora_pth)
+        if img_path:
+            self.img, self.w, self.h = self.load_img(path=img_path, n=self.num)
+
+        self.value_dict = self.get_valuedict(keys, img_path, W, H, is_video=is_video, prompt=prompt, negative_prompt=negative_prompt)
+        pass
+
+    def get_valuedict(self,keys,img,W,H,is_video=False, prompt=None, negative_prompt=None):
+        if is_video:
+            value_dict = init_embedder_options(
+            keys,
+            {},
+            )
+            img = load_img_for_prediction(W, H, display=False, key=img)
+            cond_aug = 0.02
+            value_dict["image_only_indicator"] = 0
+            value_dict["cond_frames_without_noise"] = img
+            value_dict["cond_frames"] = img + cond_aug * torch.randn_like(img)
+            value_dict["cond_aug"] = cond_aug
+            value_dict['num_samples'] = self.num_samples
+            value_dict['T'] = self.num_frames
+        else:
+            init_dict = {"orig_width": W,"orig_height": H,"target_width": W,"target_height": H,}
+            value_dict = init_embedder_options(
+            keys,
+            init_dict,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            )
+            value_dict['num_samples'] = self.num_samples
+            value_dict['T'] = self.num_frames
+            value_dict["num"] = self.num
+        return value_dict
+    
+    def load_img(self, path=None, display=False, device="cuda"):
+        assert path is not None
+        image = Image.open(path)
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        if display:
+            print(image)
+        w, h = image.size
+        print(f"loaded input image of size ({w}, {h})")
+        width, height = 1024, 1024
+        image = image.resize((width, height))
+        image = np.array(image)[None].transpose(0, 3, 1, 2)
+        image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
+        return image.to(device),w ,h 
+    
+    def get_lora(self, lora_pth):
+        lora_dict = load_safetensors(lora_pth)
+        try:
+            rank = peft.LoraConfig.from_pretrained(lora_pth).r
+        except:
+            print('Rank not found')
+            rank = 8
+        return {'weights':lora_dict, 'rank':rank}
+    
 VERSION2SPECS = {
     "SDXL-base-1.0": {
         "H": 1024,
@@ -983,7 +1067,7 @@ def do_sample(
                     return samples, samples_z
                 return samples
 
-def get_batc_old(
+def get_batch_old(
     conditioner,
     value_dict: dict,
     N: Union[List, ListConfig],

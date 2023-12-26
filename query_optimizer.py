@@ -1,129 +1,16 @@
-import time
 import threading
 import torch
-import peft
 from pytorch_lightning import seed_everything
-from llama.model import ModelArgs as llama_args
-from sd import *
-from req_llama import init_llava, llava_req
-import fairscale.nn.model_parallel.initialize as fs_init
+from req_sd import init_model, init_sampling, sd_request, VERSION2SPECS, load_model, unload_model, perform_save_locally, save_video_as_grid_and_mp4, get_condition, append_dims, autocast
 from sgm.modules.diffusionmodules.sampling import EDMSampler
+from req_llama import llama_request, hf_llama_request, get_cache_size
+from req_llava import init_llava, llava_req
 from req_llamalora import init_Llama_lora, llama_lora_req, init_lora
 from punica import BatchLenInfo, BatchedKvCache, BatchedLlamaLoraWeight, KvPool
 
-class request(object):
-    def __init__(self,input,model,cache_size=None) -> None:
-        self.input = input
-        self.time = time.time()
-        self.max_tokens = 128
-        self.state = 0   # 0 refers to INITIATION
-        self.buffer = []
-        if cache_size:
-            self.cache_k = torch.zeros(cache_size)
-            self.cache_v = torch.zeros(cache_size)
-
-        self.buffer = model.tokenizer.encode(self.input, bos=True, eos=False)
-
-class llama_request(object):
-    def __init__(self,input,tokenizer) -> None:
-        self.input = input
-        self.time = time.time()
-        self.max_tokens = 128
-        self.state = 0   # 0 refers to INITIATION
-        self.buffer = []
-
-        tokens = tokenizer(self.input, return_tensors="pt")
-        self.buffer = tokens.input_ids
-        from transformers import DynamicCache
-        self.cache = DynamicCache()
-
-class sd_request(object):
-    def __init__(
-            self, 
-            state: dict,
-            steps: int = 10,
-            is_video: bool = False,
-            prompt: str = None,
-            negative_prompt: str = '',
-            img_path: str = None,
-            lora_pth: str = None,
-            num_samples = 1,
-            ) -> None:
-        self.id = time.time()
-        self.time = time.time()
-        self.state = 0
-        self.steps = steps
-        keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
-        self.sampling = {}
-        self.num_samples = num_samples
-        self.num_frames = state['T'] if is_video else 1
-        self.num = self.num_samples * self.num_frames
-        W = state['W']
-        H = state['H']
-        
-        self.sample_z = None
-        if lora_pth:
-            self.lora_dict= self.get_lora(lora_pth)
-        if img_path:
-            self.img, self.w, self.h = self.load_img(path=img_path, n=self.num)
-
-        self.value_dict = self.get_valuedict(keys, img_path, W, H, is_video=is_video, prompt=prompt, negative_prompt=negative_prompt)
-        pass
-
-    def get_valuedict(self,keys,img,W,H,is_video=False, prompt=None, negative_prompt=None):
-        if is_video:
-            value_dict = init_embedder_options(
-            keys,
-            {},
-            )
-            img = load_img_for_prediction(W, H, display=False, key=img)
-            cond_aug = 0.02
-            value_dict["image_only_indicator"] = 0
-            value_dict["cond_frames_without_noise"] = img
-            value_dict["cond_frames"] = img + cond_aug * torch.randn_like(img)
-            value_dict["cond_aug"] = cond_aug
-            value_dict['num_samples'] = self.num_samples
-            value_dict['T'] = self.num_frames
-        else:
-            init_dict = {"orig_width": W,"orig_height": H,"target_width": W,"target_height": H,}
-            value_dict = init_embedder_options(
-            keys,
-            init_dict,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            )
-            value_dict['num_samples'] = self.num_samples
-            value_dict['T'] = self.num_frames
-            value_dict["num"] = self.num
-        return value_dict
-    
-    def load_img(self, path=None, display=False, device="cuda"):
-        assert path is not None
-        image = Image.open(path)
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
-        if display:
-            print(image)
-        w, h = image.size
-        print(f"loaded input image of size ({w}, {h})")
-        width, height = 1024, 1024
-        image = image.resize((width, height))
-        image = np.array(image)[None].transpose(0, 3, 1, 2)
-        image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
-        return image.to(device),w ,h 
-    
-    def get_lora(self, lora_pth):
-        lora_dict = load_safetensors(lora_pth)
-        try:
-            rank = peft.LoraConfig.from_pretrained(lora_pth).r
-        except:
-            print('Rank not found')
-            rank = 8
-        return {'weights':lora_dict, 'rank':rank}
-
 class query_optimazer:
     def __init__(self,
-                 model_name: str = 'llama',
+                 model_name: str = 'lora',
                  output_path: str = 'outputs/',
                  seed: int = 49,
                  **kwargs
@@ -147,8 +34,8 @@ class query_optimazer:
 
     def init_model(self,model_name,**kwargs):
         if model_name == 'llama':
-            from llama import Llama
             '''
+            from llama import Llama
             generator = Llama.build(
                 ckpt_dir='Llama-2-7b/',
                 tokenizer_path='Llama-2-7b/tokenizer.model',
@@ -160,7 +47,8 @@ class query_optimazer:
             generator = Large_model()
             print('Model loaded')
             return generator
-        elif model_name == 'vicuna':
+        
+        elif model_name == 'hf_llama':
             from transformers import LlamaForCausalLM, AutoTokenizer
             model = LlamaForCausalLM.from_pretrained('./checkpoints/llava-v1.5-7b')
             tokenizer = AutoTokenizer.from_pretrained('./checkpoints/llava-v1.5-7b')
@@ -189,7 +77,8 @@ class query_optimazer:
             self.device = model.device
             self.lora_weights = init_lora(lora_ids, 
                                           model_config, 
-                                          device=self.device,)
+                                          device=self.device,
+                                          )
             return model
             
         
@@ -217,7 +106,7 @@ class query_optimazer:
             raise NotImplementedError
         
     def add_request(self,req):
-        if self.model_name in ['llama','llava','vicuna','lora']:
+        if self.model_name in ['llama','llava','hf_llama','lora']:
             self.wait_runtime.append(req)
 
         elif self.model_name in VERSION2SPECS:
@@ -252,8 +141,8 @@ class query_optimazer:
             if self.model_name == 'llama':
                 r_batch = model.generate_iter_cache(batch) if use_cache else model.generate_iter(batch)
 
-            elif self.model_name == 'vicuna':
-                r_batch = self.txt_iterate(batch)
+            elif self.model_name == 'hf_llama':
+                r_batch = self.llama_iterate(batch)
 
             elif self.model_name == 'llava':
                 r_batch = self.llava_iterate(batch)
@@ -262,7 +151,7 @@ class query_optimazer:
                 r_batch = self.lora_iterate(batch)
 
             elif self.model_name in VERSION2SPECS:
-                r_batch = self.sample(batch, self.state)
+                r_batch = self.sd_sample(batch, self.state)
             else:
                 raise NotImplementedError
             self.n_scheduled = self.n_scheduled + 1
@@ -275,7 +164,7 @@ class query_optimazer:
                         print('Finish!',item.time,id(item.cache_k))
                         print(model.tokenizer.decode(item.buffer)+'\n')
                         del item
-                    elif self.model_name == 'vicuna':
+                    elif self.model_name == 'hf_llama':
                         print('Finish!',item.time)
                         print(self.tokenizer.decode(item.buffer)+'\n')
                         del item
@@ -298,11 +187,10 @@ class query_optimazer:
                         self.wait_postprocess.append(item)
                 else:
                     item.state = 2
-                    #print(self.tokenizer.batch_decode(item.buffer,skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]+'\n')
                     self.wait_runtime.append(item)
             self.n_scheduled = self.n_scheduled - 1 
 
-    def txt_iterate(self, batch):
+    def llama_iterate(self, batch):
         for item in batch:
             item.buffer = self.model.generate(
                 input_ids=item.buffer,
@@ -334,7 +222,6 @@ class query_optimazer:
             decode_kv=BatchedKvCache(kvcaches),
             images=image_tensors,
         )
-        #print(logits.shape)
         for i, item in enumerate(batch):
             item.next_token_id = item.generator.get_next_token_id(logits.squeeze(0)[i].unsqueeze(0))
             item.generator.append_token(item.next_token_id)
@@ -484,7 +371,7 @@ class query_optimazer:
                         return samples, samples_z
                     return samples
     
-    def sample(self, sampling, state):
+    def sd_sample(self, sampling, state):
         model = state.get('model')
         sampler = state.get('sampler')
         T = state.get('T')
@@ -554,11 +441,11 @@ def get_usr_input():
         usr_input = input()
         if usr_input != '\n':
             if optimatizer.model_name == 'llama':
-                cache_size = (llama_args.n_layers ,1, llama_args.max_seq_len, llama_args.n_heads // fs_init.get_model_parallel_world_size(), llama_args.dim // llama_args.n_heads)
-                req = request(usr_input,optimatizer.model,cache_size=cache_size)
+                cache_size = get_cache_size(optimatizer.model)
+                req = llama_request(usr_input,optimatizer.model,cache_size=cache_size)
 
-            elif optimatizer.model_name == 'vicuna':
-                req = llama_request(usr_input,optimatizer.tokenizer)
+            elif optimatizer.model_name == 'hf_llama':
+                req = hf_llama_request(usr_input,optimatizer.tokenizer)
 
             elif optimatizer.model_name == 'llava':
                 req = llava_req(usr_input,
