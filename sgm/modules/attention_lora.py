@@ -183,8 +183,8 @@ class CrossAttention(nn.Module):
         return self.to_out(out)
     
 def search_lora_weights(name, lora_dicts):
-    weights = lora_dicts['weights']
-    if weights:
+    if lora_dicts:
+        weights = lora_dicts['weights']
         alpha = 'lora_'+ name + '.alpha'
         lora_down = 'lora_' + name + '.lora_down.weight'
         lora_up = 'lora_' + name + '.lora_up.weight'

@@ -1,1 +1,0 @@
-PYTHONPATH=. streamlit run scripts/demo/video_sampling.py --server.port 1234

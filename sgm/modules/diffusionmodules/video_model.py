@@ -448,6 +448,7 @@ class VideoUNet(nn.Module):
         time_context: Optional[th.Tensor] = None,
         num_video_frames: Optional[int] = None,
         image_only_indicator: Optional[th.Tensor] = None,
+        **kwargs,
     ):
         assert (y is not None) == (
             self.num_classes is not None
