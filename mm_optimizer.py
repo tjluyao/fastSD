@@ -43,7 +43,12 @@ class mm_request(llama_req):
         return img
     
     def get_id(self, tokenizer):
-        return super().get_id(tokenizer)
+        input = \
+        'USER: '+\
+        self.input+\
+        ' ASSISTANT: '
+        input_ids = tokenizer.encode(input)
+        return input_ids
     
 class mm_optimizer(llama_optimizer):
     def __init__(self, model_name, **kwargs):
@@ -112,7 +117,8 @@ class mm_optimizer(llama_optimizer):
         input_ids = torch.tensor(generator.output_ids).to(self.device)
         length = len(input_ids) + generator.additionl_init_length
         input_embeddings = self.id_embedder(input_ids).unsqueeze(0)
-        input_embeddings = torch.cat([input_embeddings, img_tensor], dim=1)
+        #input_embeddings = torch.cat([input_embeddings, img_tensor], dim=1)
+        input_embeddings = torch.cat([img_tensor,input_embeddings], dim=1)
         blen = BatchLenInfo([length], 0, self.device)
         prefill_kv = BatchedKvCache([generator.kvcache]) if generator.kvcache else None
         decode_kv = None
