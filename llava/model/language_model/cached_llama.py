@@ -109,7 +109,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 labels,
                 images
             )
-        #print(inputs_embeds.shape if inputs_embeds is not None else None)
+        #print(inputs_embeds.shape if inputs_embeds is not None else input_ids.shape)
         torch.cuda.nvtx.range_push("LlamaForCausalLM")
         hidden_states = self.model(blen=blen, 
                                    prefill_kv=prefill_kv, 

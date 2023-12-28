@@ -3,9 +3,7 @@ import torch
 from pytorch_lightning import seed_everything
 from req_sd import init_model, init_sampling, sd_request, VERSION2SPECS, load_model, unload_model, perform_save_locally, save_video_as_grid_and_mp4, get_condition, append_dims, autocast
 from sgm.modules.diffusionmodules.sampling import EDMSampler
-from req_llama import llama_request, hf_llama_request, get_cache_size
 from req_llava import init_llava, llava_req
-from req_llamalora import init_Llama_lora, llama_lora_req, init_lora
 from punica import BatchLenInfo, BatchedKvCache, BatchedLlamaLoraWeight, KvPool
 
 class query_optimazer:
@@ -222,6 +220,7 @@ class query_optimazer:
             decode_kv=BatchedKvCache(kvcaches),
             images=image_tensors,
         )
+        print(logits.shape)
         for i, item in enumerate(batch):
             item.next_token_id = item.generator.get_next_token_id(logits.squeeze(0)[i].unsqueeze(0))
             item.generator.append_token(item.next_token_id)
@@ -477,7 +476,7 @@ def get_usr_input():
             optimatizer.add_request(req)
 
 if __name__ == "__main__":
-    optimatizer = query_optimazer('lora',lora_ids=['fin','Chinese'])
+    optimatizer = query_optimazer('llava')
     input_thread = threading.Thread(target=get_usr_input)
     input_thread.daemon = True
     input_thread.start()

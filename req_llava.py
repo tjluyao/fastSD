@@ -116,6 +116,7 @@ class TextGeneration:
                 t = torch.as_tensor([self.output_ids], device=logits.device)
             else:
                 t = None
+            print(logits.shape)
             last_token_logits = self.logits_processor(t, logits[-1].unsqueeze(0))[0]
         else:
             last_token_logits = logits[-1, :]
@@ -154,6 +155,7 @@ class TextGeneration:
             decode_kv=None,
             images=image_tensor,
         )
+        #print(logits.shape)
         next_token_id = self.get_next_token_id(logits[0])
         self.append_token(next_token_id)
         return next_token_id
