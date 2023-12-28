@@ -83,7 +83,16 @@ class mm_optimizer(llama_optimizer):
     
     def build_projector(self, model_config, **kwargs):
         from llava.model.multimodal_projector.builder import build_vision_projector
-        return build_vision_projector(model_config, **kwargs)
+        projector = build_vision_projector(model_config, **kwargs)
+        state_dict = torch.load('checkpoints/llava-v1.5-7b/mm_projector.bin')
+        new_state_dict = {
+            '0.weight': state_dict['model.mm_projector.0.weight'],
+            '0.bias': state_dict['model.mm_projector.0.bias'],
+            '2.weight': state_dict['model.mm_projector.2.weight'],
+            '2.bias': state_dict['model.mm_projector.2.bias'],
+        }
+        projector.load_state_dict(new_state_dict)
+        return projector
 
     def preprocess(self, batch):
         imgs = [req.img for req in batch]
@@ -114,7 +123,6 @@ class mm_optimizer(llama_optimizer):
             decode_kv = decode_kv, 
             input_embeddings = input_embeddings,
             )
-        print(logits.shape)
         next_token_id = generator.get_next_token_id(logits[0])
         generator.append_token(next_token_id)
         generator.next_token_id = next_token_id
@@ -159,7 +167,7 @@ class mm_optimizer(llama_optimizer):
                 )
             else:
                 logits = logits[blen.indptr[1:] - 1]
-        print(logits.shape)
+
         for i, item in enumerate(batch):
             reqctx = item.generator
             next_token_id = reqctx.get_next_token_id(logits[i].unsqueeze(0))
@@ -183,7 +191,7 @@ if __name__ == '__main__':
                     usr_input,
                     optimizer.tokenizer,
                     optimizer.kvpool,
-                    img_path='inputs/01.jpg',
+                    img_path='inputs/02.jpg',
                     image_processor=optimizer.vision_model.image_processor,
                     )
                 optimizer.wait_preprocess.append(req)
