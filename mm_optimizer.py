@@ -1,7 +1,7 @@
 from llama_optimizer import llama_optimizer
 from llama_optimizer import llama_req
 from transformers import AutoTokenizer, AutoConfig
-from punica import BatchedKvCache, BatchLenInfo, BatchedLlamaLoraWeight, KvPool
+from punica import BatchedKvCache, BatchLenInfo, KvPool
 from embedding_llama import LlamaForCausalLM
 import torch,os
 from PIL import Image
@@ -58,7 +58,7 @@ class mm_optimizer(llama_optimizer):
         model_path = kwargs.get('model_path',None)
         model_config = AutoConfig.from_pretrained(model_path)
         self.model_config = model_config
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.tokenizer = self.build_tokenizer(model_config)
         self.model = LlamaForCausalLM.from_pretrained(model_path,
                                                     low_cpu_mem_usage=True,
                                                     torch_dtype=torch.float16,
@@ -81,6 +81,10 @@ class mm_optimizer(llama_optimizer):
         )
         print('Model initialized.')
 
+    def build_tokenizer(self, model_config, **kwargs):
+        tokenizer = AutoTokenizer.from_pretrained(model_config)
+        return tokenizer
+    
     def build_vision_model(self, model_config, **kwargs):
         from llava.model.multimodal_encoder.clip_encoder import CLIPVisionTower
         mm_vision_tower = "openai/clip-vit-large-patch14-336"
