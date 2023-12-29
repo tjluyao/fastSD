@@ -211,7 +211,7 @@ if __name__ == '__main__':
                     usr_input,
                     optimizer.tokenizer,
                     optimizer.kvpool,
-                    img_path='inputs/03.jpg',
+                    img_path='inputs/02.jpg',
                     image_processor=optimizer.vision_model.image_processor,
                     )
                 optimizer.wait_preprocess.append(req)

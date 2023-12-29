@@ -4,6 +4,36 @@ from embedding_llama import LlamaForCausalLM
 import torch
 from punica import BatchedKvCache, BatchLenInfo, KvPool
 
+class lynx_req(mm_request):
+    def __init__(
+            self, 
+            input, 
+            tokenizer, 
+            kvpool, 
+            device='cuda',
+            img_path=None,
+            additional_init_length=576,
+            **kwargs,
+        ):
+        super().__init__(
+            input=input,
+            tokenizer=tokenizer,
+            kvpool=kvpool,
+            device=device,
+            img_path=img_path,
+            temperature=0.9,
+            repetition_penalty=1.0,
+            top_p=0.9,
+            top_k=-1,
+            max_new_tokens=500,
+            additional_init_length=additional_init_length,
+            **kwargs,
+        )
+
+    def get_id(self, tokenizer):
+        input_ids = tokenizer.encode(self.input)
+        return input_ids
+    
 class lynx_optimizer(mm_optimizer):
     def __init__(self, model_name, **kwargs):
         super().__init__(model_name, **kwargs)
@@ -67,7 +97,7 @@ class lynx_optimizer(mm_optimizer):
     def preprocess(self, batch):
         imgs = [req.img for req in batch]
         imgs = torch.cat(imgs, dim=0).to(self.device)
-        print(imgs.shape)
+        #print(imgs.shape)
         img_tensors = self.vision_model(imgs)
         if self.projector:
             img_tensors,_ = self.projector(img_tensors)
@@ -79,12 +109,12 @@ class lynx_optimizer(mm_optimizer):
     
     def prefill(self, req):
         generator = req.generator
-        img_tensor = req.img_tensor
-        print(img_tensor.shape)
+        img_tensor = req.img_tensor.unsqueeze(0)
+        #print(img_tensor.shape)
         input_ids = torch.tensor(generator.output_ids).to(self.device)
         length = len(input_ids) + generator.additional_init_length
-        input_embeddings = self.id_embedder(input_ids)
-        input_embeddings = torch.cat([img_tensor,input_embeddings], dim=0)
+        input_embeddings = self.id_embedder(input_ids).unsqueeze(0)
+        input_embeddings = torch.cat([img_tensor,input_embeddings], dim=1)
         blen = BatchLenInfo([length], 0, self.device)
         prefill_kv = BatchedKvCache([generator.kvcache]) if generator.kvcache else None
         decode_kv = None
@@ -95,7 +125,7 @@ class lynx_optimizer(mm_optimizer):
             decode_kv = decode_kv, 
             input_embeddings = input_embeddings,
             )
-        next_token_id = generator.get_next_token_id(logits)
+        next_token_id = generator.get_next_token_id(logits[0])
         generator.append_token(next_token_id)
         generator.next_token_id = next_token_id
     
@@ -110,11 +140,11 @@ if __name__ == '__main__':
         while True:
             usr_input = input()
             if usr_input != '\n':
-                req = mm_request(
+                req = lynx_req(
                     usr_input,
                     optimizer.tokenizer,
                     optimizer.kvpool,
-                    img_path='inputs/03.jpg',
+                    img_path='inputs/02.jpg',
                     resize=420,
                     img_dtype=torch.float16,
                     additional_init_length=32,
