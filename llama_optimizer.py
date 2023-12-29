@@ -16,7 +16,7 @@ class llama_req():
                  top_k=-1,
                  max_new_tokens=500,
                  lora_id=None,
-                 additionl_init_length=0,
+                 additional_init_length=0,
                  ) -> None:
         
         self.input = input
@@ -36,7 +36,7 @@ class llama_req():
             maxlen=max_new_tokens,
             stop_token_id=tokenizer.eos_token_id,
             lora_id=lora_id,
-            additionl_init_length=additionl_init_length,
+            additional_init_length=additional_init_length,
         )
     
     def get_id(self,tokenizer):

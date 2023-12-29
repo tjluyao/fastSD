@@ -5,6 +5,7 @@ from punica import BatchedKvCache, BatchLenInfo, KvPool
 from embedding_llama import LlamaForCausalLM
 import torch,os
 from PIL import Image
+import numpy as np
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -16,7 +17,7 @@ class mm_request(llama_req):
             kvpool, 
             device='cuda',
             img_path=None,
-            additionl_init_length=576,
+            additional_init_length=576,
             **kwargs,
         ):
         self.device = device
@@ -29,7 +30,7 @@ class mm_request(llama_req):
             top_p=0.9,
             top_k=-1,
             max_new_tokens=500,
-            additionl_init_length=additionl_init_length,
+            additional_init_length=additional_init_length,
         )
         self.img_path = img_path
         self.img = self.load_img(img_path, **kwargs)
@@ -40,6 +41,15 @@ class mm_request(llama_req):
         img = Image.open(img_path).convert('RGB')
         if image_processor:
             img = image_processor(img, return_tensors='pt')['pixel_values'].squeeze(0)
+        else:
+            size = kwargs.get('resize', None)
+            if size:
+                img = img.resize((size,size))
+            img = np.array(img)
+            img = torch.tensor(img).permute(2,0,1).unsqueeze(0)
+            dtype = kwargs.get('img_dtype', None)
+            if dtype:
+                img = img.to(dtype)
         return img
     
     def get_id(self, tokenizer):
@@ -58,7 +68,7 @@ class mm_optimizer(llama_optimizer):
         model_path = kwargs.get('model_path',None)
         model_config = AutoConfig.from_pretrained(model_path)
         self.model_config = model_config
-        self.tokenizer = self.build_tokenizer(model_config)
+        self.tokenizer = self.build_tokenizer(model_path)
         self.model = LlamaForCausalLM.from_pretrained(model_path,
                                                     low_cpu_mem_usage=True,
                                                     torch_dtype=torch.float16,
@@ -81,17 +91,17 @@ class mm_optimizer(llama_optimizer):
         )
         print('Model initialized.')
 
-    def build_tokenizer(self, model_config, **kwargs):
-        tokenizer = AutoTokenizer.from_pretrained(model_config)
+    def build_tokenizer(self, model_path, **kwargs):
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
         return tokenizer
-    
+
     def build_vision_model(self, model_config, **kwargs):
-        from llava.model.multimodal_encoder.clip_encoder import CLIPVisionTower
+        from models.llava.multimodal_encoder.clip_encoder import CLIPVisionTower
         mm_vision_tower = "openai/clip-vit-large-patch14-336"
         return CLIPVisionTower(mm_vision_tower, args=model_config, **kwargs)
     
     def build_projector(self, model_config, **kwargs):
-        from llava.model.multimodal_projector.builder import build_vision_projector
+        from models.llava.multimodal_projector.builder import build_vision_projector
         projector = build_vision_projector(model_config, **kwargs)
         state_dict = torch.load('checkpoints/llava-v1.5-7b/mm_projector.bin')
         new_state_dict = {
@@ -119,7 +129,7 @@ class mm_optimizer(llama_optimizer):
         generator = req.generator
         img_tensor = req.img_tensor.half()
         input_ids = torch.tensor(generator.output_ids).to(self.device)
-        length = len(input_ids) + generator.additionl_init_length
+        length = len(input_ids) + generator.additional_init_length
         input_embeddings = self.id_embedder(input_ids).unsqueeze(0)
         #input_embeddings = torch.cat([input_embeddings, img_tensor], dim=1)
         input_embeddings = torch.cat([img_tensor,input_embeddings], dim=1)
@@ -201,7 +211,7 @@ if __name__ == '__main__':
                     usr_input,
                     optimizer.tokenizer,
                     optimizer.kvpool,
-                    img_path='inputs/02.jpg',
+                    img_path='inputs/03.jpg',
                     image_processor=optimizer.vision_model.image_processor,
                     )
                 optimizer.wait_preprocess.append(req)

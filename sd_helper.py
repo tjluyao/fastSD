@@ -211,7 +211,7 @@ def get_guider(options):
 def init_sampling(
     img2img_strength=None,
     stage2strength=None,
-    steps = 40,
+    steps = 30,
     sampler = None,
     discretization = None,
     options: Optional[Dict[str, int]] = None,
@@ -236,7 +236,7 @@ def init_sampling(
     sampler = samplers[options.get("sampler", 0)]
     sampler = get_sampler(sampler, steps, discretization_config, guider_config)
     if img2img_strength is not None:
-        print("Wrapping {sampler.__class__.__name__} with Img2ImgDiscretizationWrapper")
+        #print("Wrapping {sampler.__class__.__name__} with Img2ImgDiscretizationWrapper")
         sampler.discretization = Img2ImgDiscretizationWrapper(
             sampler.discretization, strength=img2img_strength
         )

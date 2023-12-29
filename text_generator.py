@@ -16,7 +16,7 @@ class TextGeneration:
         maxlen: int,
         stop_token_id: int,
         lora_id = None,
-        additionl_init_length : int = 0,
+        additional_init_length : int = 0,
     ):
         self.temperature = temperature
         self.repetition_penalty = repetition_penalty
@@ -24,7 +24,7 @@ class TextGeneration:
         self.top_k = top_k
         self.maxlen = maxlen
         self.stop_token_id = stop_token_id
-        self.additionl_init_length = additionl_init_length
+        self.additional_init_length = additional_init_length
 
         # Logits processing adapted from: https://github.com/lm-sys/FastChat/blob/bb7ca37c2bfad629ba4751dec188bdcdc2cf0c81/fastchat/serve/inference.py
         self.logits_processor = transformers.LogitsProcessorList()
@@ -43,7 +43,7 @@ class TextGeneration:
 
         self.output_ids = [int(x) for x in input_ids]
         self.prompt_len = len(self.output_ids)
-        self.kvcache = KvCache(kvpool, self.prompt_len + additionl_init_length)
+        self.kvcache = KvCache(kvpool, self.prompt_len + additional_init_length)
         self.tokenizer = tokenizer
         self.lora_id = lora_id
         self.prefix_offset = 0

@@ -174,7 +174,7 @@ class sd_request():
             img_path: str = None,
             lora_pth: str = None,
             output_path: str = './outputs',
-            num_samples : int = 1,
+            num_samples : int = 2,
             ) -> None:
         self.output_path = output_path
         self.time = time.time()
@@ -270,7 +270,7 @@ class sd_optimizer(default_optimazer):
         from sd_helper import init_model as init_sd
         from sd_helper import init_sampling
         state = init_sd(version_dict, load_filter=True)
-        steps = kwargs.get('steps',10)
+        steps = kwargs.get('steps',30)
         state['W'] = version_dict.get('W', 1024)
         state['H'] = version_dict.get('H', 1024)
         state['C'] = version_dict['C']
@@ -447,8 +447,8 @@ class sd_optimizer(default_optimazer):
                 del req
     
 if __name__ == '__main__':
-    #optimizer = sd_optimizer('SDXL-base-1.0')
-    optimizer = sd_optimizer('svd')
+    optimizer = sd_optimizer('SDXL-base-1.0')
+    #optimizer = sd_optimizer('svd')
     def get_usr_input():
         while True:
             usr_input = input()
@@ -457,8 +457,8 @@ if __name__ == '__main__':
                     state=optimizer.state,
                     prompt=usr_input,
                     #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
-                    video_task=True,
-                    img_path='inputs/01.jpg',
+                    video_task=False,
+                    #img_path='inputs/03.jpg',
                 )
                 optimizer.wait_preprocess.append(req) 
 
