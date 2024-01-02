@@ -9,6 +9,7 @@ from transformers.models.llama.modeling_llama import (
     PreTrainedModel,
     LlamaMLP,
     LlamaRMSNorm,
+    LlamaRotaryEmbedding,
 )
 
 class LlamaAttention(nn.Module):
@@ -37,6 +38,10 @@ class LlamaAttention(nn.Module):
         self.o_proj = nn.Linear(
             self.num_qo_heads * self.head_dim, self.hidden_size, bias=False
         )
+
+        self.max_position_embeddings = config.max_position_embeddings
+        self.rotary_emb = LlamaRotaryEmbedding(self.head_dim, max_position_embeddings=self.max_position_embeddings)
+
 
     def forward(
         self,
@@ -98,7 +103,12 @@ class LlamaAttention(nn.Module):
         return attn_output
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+    def __init__(
+            self, 
+            config: LlamaConfig, 
+            layer_idx: int,
+            use_adapter: bool = False,
+            ):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
@@ -107,6 +117,12 @@ class LlamaDecoderLayer(nn.Module):
         self.post_attention_layernorm = LlamaRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
+        if use_adapter:
+            from models.lynx.adapter_modeling import Adapter
+            self.output_adapter = Adapter(input_size=config.hidden_size)
+        else:
+            self.output_adapter = None
+
 
     def forward(
         self,
@@ -141,6 +157,10 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
         torch.cuda.nvtx.range_pop()
 
+        if self.output_adapter:
+            adapter_residual = hidden_states
+            hidden_states = self.output_adapter(hidden_states, adapter_residual)
+
         return hidden_states
 
 
@@ -163,9 +183,20 @@ class LlamaModel(LlamaPreTrainedModel):
         self.embed_tokens = nn.Embedding(
             config.vocab_size, config.hidden_size, self.padding_idx
         )
-        self.layers = nn.ModuleList(
-            [LlamaDecoderLayer(config, i) for i in range(config.num_hidden_layers)]
-        )
+
+        if config.use_adapter:
+            assert config.adapter_freq >= 1
+            adapter_layers = list(range(0, config.num_hidden_layers, config.adapter_freq))
+            print("### Add adapters to: ", adapter_layers, flush=True)
+        else:
+            adapter_layers = []
+
+        self.layers = []
+        for i in range(config.num_hidden_layers):
+            use_adapter = True if i in adapter_layers else False
+            self.layers.append(LlamaDecoderLayer(config, i, use_adapter=use_adapter))
+        self.layers = nn.ModuleList(self.layers)
+
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_init()
 
@@ -202,6 +233,24 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
 
     def forward(
         self,

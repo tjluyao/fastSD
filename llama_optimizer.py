@@ -72,6 +72,7 @@ class llama_optimizer(default_optimazer):
             dtype=torch.float16,
             device=self.device,
         )
+        print('Model initialized.')
  
     def iteration(self,batch):
         prefill_input_ids, prefill_lens, prefill_kv = [], [], []

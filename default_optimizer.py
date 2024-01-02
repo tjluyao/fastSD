@@ -11,6 +11,7 @@ class default_optimazer:
                 device: str = 'cuda',
                 **kwargs
                 ):
+        seed_everything(seed)
         self.model_name = model_name
         self.device = device
         self.init_model(**kwargs)
@@ -19,7 +20,6 @@ class default_optimazer:
         self.wait_preprocess = []
         self.wait_runtime = []
         self.wait_postprocess = []
-        seed_everything(seed)
         pass
 
     def init_model(self, **kwargs):

@@ -59,7 +59,7 @@ image_std: [ 0.26862954, 0.26130258, 0.27577711 ]
 
 
 ## Testing
-checkpoint: "./data/finetune_lynx.pt"
+checkpoint: "./checkpoints/finetune_lynx.pt"
 
 ## infer params
 max_input_tokens: 40
