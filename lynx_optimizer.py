@@ -3,6 +3,7 @@ from transformers import LlamaConfig, LlamaTokenizer
 from embedding_llama import LlamaForCausalLM
 import torch
 from punica import BatchedKvCache, BatchLenInfo, KvPool
+from PIL import Image
 
 class lynx_req(mm_request):
     def __init__(
@@ -38,6 +39,35 @@ class lynx_req(mm_request):
         input_ids = tokenizer.encode(input)
         return input_ids
     
+    def load_img(self, img_path, **kwargs):
+        config = kwargs.get('config', None)
+        transform = self.init_image_transform(config)
+        img = Image.open(img_path).convert('RGB')
+        img = transform(img)
+        if kwargs.get('img_dtype', None):
+            img = img.to(kwargs['img_dtype'])
+        print(img.shape)
+        return img.unsqueeze(0)
+
+    def init_image_transform(self, config):
+        from torchvision import transforms
+        from torchvision.transforms import InterpolationMode
+        normalize = transforms.Normalize(config['image_mean'], config['image_std'])
+
+        def _convert_to_rgb(image):
+            return image.convert('RGB')
+
+        transform = transforms.Compose([
+            transforms.Resize(size=config['image_res'], interpolation=InterpolationMode.BICUBIC, max_size=None, antialias=None),
+            transforms.CenterCrop(size=(config['image_res'], config['image_res'])),
+            _convert_to_rgb,
+            transforms.ToTensor(),
+            normalize,
+        ])
+
+        return transform
+
+    
 class lynx_optimizer(mm_optimizer):
     def __init__(self, model_name, **kwargs):
         super().__init__(model_name, **kwargs)
@@ -47,6 +77,7 @@ class lynx_optimizer(mm_optimizer):
         if config_path:
             import yaml
             config = yaml.load(open(config_path, 'r'), Loader=yaml.Loader)
+            self.config = config
         self.tokenizer, num_new_tokens = self.build_tokenizer(config, **kwargs)
         kwargs['num_new_tokens'] = num_new_tokens
         self.model = self.bulid_llm(config, **kwargs)
@@ -223,7 +254,7 @@ if __name__ == '__main__':
                     optimizer.tokenizer,
                     optimizer.kvpool,
                     img_path='inputs/03.jpg',
-                    resize=420,
+                    config=optimizer.config,
                     img_dtype=torch.float16,
                     additional_init_length=32,
                     )

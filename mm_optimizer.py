@@ -41,15 +41,6 @@ class mm_request(llama_req):
         img = Image.open(img_path).convert('RGB')
         if image_processor:
             img = image_processor(img, return_tensors='pt')['pixel_values'].squeeze(0)
-        else:
-            size = kwargs.get('resize', None)
-            if size:
-                img = img.resize((size,size))
-            img = np.array(img)
-            img = torch.tensor(img).permute(2,0,1).unsqueeze(0)
-            dtype = kwargs.get('img_dtype', None)
-            if dtype:
-                img = img.to(dtype)
         return img
     
     def get_id(self, tokenizer):
