@@ -176,7 +176,7 @@ class LlamaPreTrainedModel(PreTrainedModel):
 
 
 class LlamaModel(LlamaPreTrainedModel):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, **kwargs):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -184,9 +184,11 @@ class LlamaModel(LlamaPreTrainedModel):
             config.vocab_size, config.hidden_size, self.padding_idx
         )
 
-        if config.use_adapter:
-            assert config.adapter_freq >= 1
-            adapter_layers = list(range(0, config.num_hidden_layers, config.adapter_freq))
+        use_adapter = kwargs.get('use_adapter',False)
+        if use_adapter:
+            adapter_freq = kwargs.get('adapter_freq',1)
+            assert adapter_freq >= 1
+            adapter_layers = list(range(0, config.num_hidden_layers, adapter_freq))
             print("### Add adapters to: ", adapter_layers, flush=True)
         else:
             adapter_layers = []
@@ -206,9 +208,9 @@ class LlamaModel(LlamaPreTrainedModel):
         blen: BatchLenInfo,
         prefill_kv: BatchedKvCache | None,
         decode_kv: BatchedKvCache | None,
-        input_embeddings: torch.Tensor | None,
+        input_embeddings: torch.Tensor = None,
     ) -> torch.Tensor:
-        if input_ids:
+        if input_ids is not None:
             torch.cuda.nvtx.range_push("embed")
             hidden_states = self.embed_tokens(input_ids)
             torch.cuda.nvtx.range_pop()
@@ -228,9 +230,9 @@ class LlamaModel(LlamaPreTrainedModel):
 
 
 class LlamaForCausalLM(LlamaPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, **kwargs):
         super().__init__(config)
-        self.model = LlamaModel(config)
+        self.model = LlamaModel(config, **kwargs)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
 
@@ -258,7 +260,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         blen: BatchLenInfo,
         prefill_kv: BatchedKvCache | None,
         decode_kv: BatchedKvCache | None,
-        input_embeddings: torch.Tensor | None,
+        input_embeddings: torch.Tensor = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         torch.cuda.nvtx.range_push("LlamaForCausalLM")
         hidden_states = self.model(input_ids, blen, prefill_kv, decode_kv, input_embeddings)

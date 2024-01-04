@@ -1,0 +1,63 @@
+model_name: "llava"
+model_num: 4
+
+# Model 0
+model0: {
+  model_type: 'tokenizer',
+  model_mode: 'batch',
+  input_type: 'str',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/llava-v1.5-7b',
+  next_model: 1,
+  prompt: "USER: {input}\nASSISTANT: ",
+}
+
+# Model 1
+model1: {
+  model_type: 'visual',
+  model_mode: 'batch',
+  input_type: 'Image',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/llava-v1.5-7b',
+  next_model: 2,
+  visual_options: {
+    model_name: "openai/clip-vit-large-patch14-336",
+    mm_vision_select_layer: -2,
+    mm_vision_select_feature: 'patch',
+  },
+  projector_options: {
+    model_name: "llava",
+    checkpoint_path: 'checkpoints/llava-v1.5-7b/mm_projector.bin',
+    mm_projector_type: 'mlp2x_gelu',
+    mm_hidden_size: 1024,
+    hidden_size: 4096,
+  },
+  image_process_type: 'processor',
+}
+
+# Model 2
+model2: {
+  model_type: 'vituna',
+  model_mode: 'iterative',
+  input_type: 'tensor',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/llava-v1.5-7b',
+  next_model: 3,
+  options: {
+    low_cpu_mem_usage: True,
+    torch_dtype: 'float16',
+  }
+}
+
+# Model 3
+model3: {
+  model_type: 'tokenizer_decode',
+  model_mode: 'batch',
+  input_type: 'tensor',
+  output_type: 'str',
+  checkpoint_path: 'checkpoints/llava-v1.5-7b',
+  next_model: None,
+  options: {
+
+  }
+}

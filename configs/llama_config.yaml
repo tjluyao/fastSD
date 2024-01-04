@@ -1,0 +1,40 @@
+model_name: "llama"
+model_num: 3
+
+# Model 0
+model0: {
+  model_type: 'tokenizer',
+  model_mode: 'batch',
+  input_type: 'str',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/Llama-2-7b-chat-hf',
+  next_model: 1,
+  prompt: False,
+}
+
+# Model 1
+model1: {
+  model_type: 'llama',
+  model_mode: 'iterative',
+  input_type: 'tensor',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/Llama-2-7b-chat-hf',
+  next_model: 2,
+  options: {
+    low_cpu_mem_usage: True,
+    torch_dtype: 'float16',
+  }
+}
+
+# Model 2
+model2: {
+  model_type: 'tokenizer_decode',
+  model_mode: 'batch',
+  input_type: 'tensor',
+  output_type: 'str',
+  checkpoint_path: 'checkpoints/Llama-2-7b-chat-hf',
+  next_model: None,
+  options: {
+
+  }
+}

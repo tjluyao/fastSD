@@ -1,0 +1,68 @@
+model_name: "lynx"
+model_num: 4
+
+# Model 0
+model0: {
+  model_type: 'tokenizer',
+  model_mode: 'batch',
+  input_type: 'str',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/vicuna-7b-v1.1',
+  next_model: 1,
+  prompt: "User: {input}\nBot: ",
+  options: {
+  }
+}
+
+# Model 1
+model1: {
+  model_type: 'visual',
+  model_mode: 'batch',
+  input_type: 'Image',
+  output_type: 'tensor',
+  next_model: 2,
+  visual_options: {
+    model_name: "eva_vit_1b",
+    checkpoint_path: 'checkpoints/EVA-CLIP/EVA01_g_psz14.pt',
+    finetune_path: 'checkpoints/lynx/vision.pt',
+    image_res: 420,
+    image_mean: [ 0.48145466, 0.4578275, 0.40821073 ],
+    image_std: [ 0.26862954, 0.26130258, 0.27577711 ],
+  },
+  projector_options: {
+    model_name: "lynx",
+    checkpoint_path: 'checkpoints/lynx/projector.pt',
+    text_width: 4096,
+    bridge_depth: 3,
+    num_bridge_tokens: 32,
+  },
+  image_process_type: 'transform',
+}
+
+# Model 2
+model2: {
+  model_type: 'vituna',
+  model_mode: 'iterative',
+  input_type: 'tensor',
+  output_type: 'tensor',
+  checkpoint_path: 'checkpoints/vicuna-7b-v1.1',
+  next_model: 3,
+  options: {
+    use_adapter: True,
+    adapter_freq: 2,
+  },
+  adapter_path: 'checkpoints/lynx/adapter.pt',
+}
+
+# Model 3
+model3: {
+  model_type: 'tokenizer_decode',
+  model_mode: 'batch',
+  input_type: 'tensor',
+  output_type: 'str',
+  checkpoint_path: 'checkpoints/vicuna-7b-v1.1',
+  next_model: None,
+  options: {
+
+  }
+}
