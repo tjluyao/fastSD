@@ -2,14 +2,14 @@ import yaml
 import time
 from punica import KvCache
 from pytorch_lightning import seed_everything
-from model import llama_model, tokenizer_model, tokenizer_decode_model, visual_model
+from model import llama_model, tokenizer_model, tokenizer_decode_model, visual_model, llamalora_model
 
 
 class Request():
     def __init__(
             self,
             input,
-            lora_id = None,
+            lora_id = 'empty',
             img_path = None,
         ) -> None:
         self.input = input
@@ -32,6 +32,8 @@ class Optimizer:
             Loader=yaml.FullLoader
             )
         self.config = config
+        #make diagram
+        diagram = self.make_diagram(config)
         self.waitlists=[]
         self.batch_size = config.get('batch_size',1)
         self.iteration_batch_size = config.get('iteration_batch_size',1)
@@ -49,6 +51,8 @@ class Optimizer:
                 model = tokenizer_decode_model(model_config)
             elif model_type in ['llama','vituna']:
                 model = llama_model(model_config)
+            elif model_type == 'llama_lora':
+                model = llamalora_model(model_config)
             elif model_type == 'visual':
                 model = visual_model(model_config)
             else:
@@ -56,7 +60,21 @@ class Optimizer:
             setattr(self, model_name, model)
             self.waitlists.append([])
             print(f'{model_name} initialized.')
-    
+        print('Optimizer initialized.\n')
+
+    def make_diagram(self,config):
+        models = []
+        #用链表形式存储模型之间的关系
+        for i in range(config['model_num']):
+            model = {}
+            model_name = 'model'+str(i)
+            model['config'] = config[model_name]
+            model['next_model'] = config[model_name]['next_model']
+            model['is_first'] = True if i == 0 else False
+            model['is_last'] = True if i == config['model_num']-1 else False
+            models.append(model)
+        return models
+
     def select(self,pool,batch_size):
         batch = []
         pool = sorted(pool, key=lambda req: req.time)
@@ -89,7 +107,8 @@ class Optimizer:
 
 if __name__ == '__main__':
     optimizer = Optimizer(
-        'configs/lynx_config.yaml'
+        #'configs/lynx_config.yaml'
+        'configs/llamalora_config.yaml'
         )
     def get_usr_input():
         while True:
@@ -98,8 +117,9 @@ if __name__ == '__main__':
                 req = Request(
                     usr_input,
                     img_path='inputs/02.jpg',
+                    lora_id='empty'
                     )
-                print('input received.\n')
+                print('Input received.\n')
                 optimizer.waitlists[0].append(req)
 
     import threading

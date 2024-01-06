@@ -2,6 +2,7 @@ import torch
 import transformers
 from transformers import AutoTokenizer,AutoConfig
 from embedding_llama import LlamaForCausalLM
+from embedding_llamalora import LlamaForCausalLMWithLora
 from punica import KvPool, BatchLenInfo, BatchedKvCache, KvCache
 
 class abstract_model:
@@ -98,7 +99,6 @@ class llama_model(abstract_model):
     def run(self,reqs,**kwargs):
         prefill_input_ids, prefill_lens, prefill_kv = [], [], []
         decode_input_ids, decode_kv = [], []
-        lora_ids, lora_lens = [], []
         for req in reqs:
             if req.is_prefill:
                 prefill_input_ids.extend(req.token_ids)
@@ -112,11 +112,7 @@ class llama_model(abstract_model):
                 decode_input_ids.append(req.token_ids[-1])
                 decode_kv.append(req.kvcache)
                 req.kvcache.acquire_one()
-            if lora_ids and lora_ids[-1] == req.lora_id:
-                lora_lens[-1] += 1
-            else:
-                lora_ids.append(req.lora_id)
-                lora_lens.append(1)
+
         input_ids = torch.tensor(
                 prefill_input_ids + decode_input_ids,
                 dtype=torch.long,
@@ -168,6 +164,169 @@ class llama_model(abstract_model):
         stop_info = len(req.token_ids) >= self.maxlen or req.token_ids[-1] == self.stop_token_id
         return stop_info
     
+from lora import LlamaLoraWeight, weight_convert, lora_paths
+import peft
+from punica import BatchedLlamaLoraWeight
+class llamalora_model(abstract_model):
+
+    def __init__(self, config):
+        super().__init__(config)
+        path = config['checkpoint_path']
+        options = config.get('options',{})
+        if options.get('torch_dtype',None) == 'float16':
+            options['torch_dtype'] = torch.float16
+        model_config = AutoConfig.from_pretrained(path)
+        self.model = LlamaForCausalLMWithLora.from_pretrained(path,
+                                                      config=model_config,
+                                                      **options)
+        if options.get('use_adapter',False):
+            weights = torch.load(config['adapter_path'],map_location=self.device)
+            self.model.load_state_dict(weights,strict=False)
+        self.model.half().to(self.device).eval()
+        self.kvpool = KvPool(
+            num_layers=model_config.num_hidden_layers,
+            num_heads=model_config.num_attention_heads,
+            head_dim=model_config.hidden_size // model_config.num_attention_heads,
+            page_len=16,
+            dtype=torch.float16,
+            device=self.device,
+        )
+        lora_ids = config.get('lora_ids',[])
+        self.lora_weights = self.init_lora(
+            lora_ids, 
+            model_config, 
+            device=self.device,
+            )
+
+        self.temperature = config.get('temperature',0.9)
+        self.repetition_penalty = config.get('repetition_penalty',1.0)
+        self.top_p = config.get('top_p',0.9)
+        self.top_k = config.get('top_k',-1)
+        self.maxlen = config.get('maxlen',500)
+        self.stop_token_id = self.model.config.eos_token_id
+        # Logits processing adapted from: https://github.com/lm-sys/FastChat/blob/bb7ca37c2bfad629ba4751dec188bdcdc2cf0c81/fastchat/serve/inference.py
+        self.logits_processor = transformers.LogitsProcessorList()
+        if self.temperature > 0 and self.temperature != 1.0:
+            self.logits_processor.append(
+                transformers.TemperatureLogitsWarper(self.temperature)
+            )
+        if self.repetition_penalty > 1.0:
+            self.logits_processor.append(
+                transformers.RepetitionPenaltyLogitsProcessor(self.repetition_penalty)
+            )
+        if 0 < self.top_p < 1.0:
+            self.logits_processor.append(transformers.TopPLogitsWarper(self.top_p))
+        if self.top_k > 0:
+            self.logits_processor.append(transformers.TopKLogitsWarper(self.top_k))
+    
+    def init_lora(self,
+            lora_ids,
+            model_config,
+            device=torch.device("cuda:0"),
+            dtype=torch.float16,
+            ):
+        lora_weights = {}
+        defalut_rank = 16
+        lora_weights["empty"] = LlamaLoraWeight(
+                model_config, defalut_rank, dtype, device
+            )
+        if lora_ids is None:
+            return lora_weights
+        for lora in lora_ids:
+            path = lora_paths[lora]
+            model_path = path+'/adapter_model.bin'
+            tmp = torch.load(
+                    model_path, map_location=device, weights_only=True
+                )
+            lora_rank = peft.config.PeftConfigMixin.from_json_file(path+'/adapter_config.json')['r']
+            if lora_rank < 16:
+                lora_weight = LlamaLoraWeight(model_config, lora_rank*2, dtype, device)
+            else:
+                lora_weight = LlamaLoraWeight(model_config, lora_rank, dtype, device)
+            tmp = weight_convert(tmp,lora_rank)
+            lora_weight.copy_from_tensors(tmp)
+            del tmp
+            lora_weights[lora] = lora_weight
+        return lora_weights
+
+    
+    def run(self,reqs,**kwargs):
+        prefill_input_ids, prefill_lens, prefill_kv = [], [], []
+        decode_input_ids, decode_kv = [], []
+        lora_ids, lora_lens = [], []
+        for req in reqs:
+            if req.is_prefill:
+                prefill_input_ids.extend(req.token_ids)
+                length = len(req.token_ids)
+                prefill_lens.append(length)
+                kvcache = KvCache(self.kvpool, length)
+                setattr(req, 'kvcache', kvcache)
+                prefill_kv.append(req.kvcache)
+                req.is_prefill = False
+            else:
+                decode_input_ids.append(req.token_ids[-1])
+                decode_kv.append(req.kvcache)
+                req.kvcache.acquire_one()
+            if lora_ids and lora_ids[-1] == req.lora_id:
+                lora_lens[-1] += 1
+            else:
+                lora_ids.append(req.lora_id)
+                lora_lens.append(1)
+        input_ids = torch.tensor(
+                prefill_input_ids + decode_input_ids,
+                dtype=torch.long,
+                device=self.device,
+            )
+        blen = BatchLenInfo(prefill_lens, len(decode_input_ids), self.device)
+        prefill_kv = BatchedKvCache(prefill_kv) if prefill_kv else None
+        decode_kv = BatchedKvCache(decode_kv) if decode_kv else None
+        lora = BatchedLlamaLoraWeight(
+            [self.lora_weights[id] for id in lora_ids], lora_lens
+        )
+
+        logits, _ = self.model(input_ids, blen, prefill_kv, decode_kv, lora=lora)
+
+        if prefill_kv:
+            if decode_kv:
+                logits = torch.cat(
+                    [logits[blen.indptr[1:] - 1], logits[blen.doff :]]
+                )
+            else:
+                logits = logits[blen.indptr[1:] - 1]
+
+        for i, req in enumerate(reqs):
+            stop_info = self.set_next_token_id(req,logits[i].unsqueeze(0))
+            if stop_info:
+                req.state = self.next_model
+                req.kvcache.release()
+                req.kvcache = None
+        return reqs
+    
+    def set_next_token_id(
+            self, 
+            req,
+            logits: torch.Tensor,
+            ) -> int:
+        if self.logits_processor:
+            if self.repetition_penalty > 1.0:
+                t = torch.as_tensor([req.token_ids], device=logits.device)
+            else:
+                t = None
+            last_token_logits = self.logits_processor(t, logits[-1].unsqueeze(0))[0]
+        else:
+            last_token_logits = logits[-1, :]
+
+        if self.temperature <= 0 or self.top_p <= 0:
+            _, indices = torch.topk(last_token_logits, 2)
+        else:
+            probs = torch.softmax(last_token_logits, dim=-1)
+            indices = torch.multinomial(probs, num_samples=2)
+        token = int(indices.tolist()[0])
+        req.token_ids.append(token)
+        stop_info = len(req.token_ids) >= self.maxlen or req.token_ids[-1] == self.stop_token_id
+        return stop_info
+
+
 from PIL import Image 
 class visual_model(abstract_model):
     def __init__(self,config):
