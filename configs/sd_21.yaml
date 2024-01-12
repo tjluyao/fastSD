@@ -1,0 +1,11 @@
+model_name: 'sd_2.1'
+batch_configs: [4,32,4]
+model: {
+        "H": 512,
+        "W": 512,
+        "C": 4,
+        "f": 8,
+        "is_legacy": True,
+        "config": "configs/inference/sd_2_1.yaml",
+        "ckpt": "checkpoints/v2-1_512-ema-pruned.safetensors",
+    }

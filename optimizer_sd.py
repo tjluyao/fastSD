@@ -1,283 +1,33 @@
-import time
-import peft
-import torch
-import numpy as np
-from torch import autocast
-from PIL import Image
-import random
-from safetensors.torch import load_file as load_safetensors
-from sd_helper import (init_embedder_options, 
-                       load_img_for_prediction, 
-                       EDMSampler, 
-                       append_dims,
-                       get_condition, 
-                       load_model, 
-                       unload_model,
-                       save_video_as_grid_and_mp4,
-                       perform_save_locally)
+from optimizer import Optimizer, yaml, seed_everything
+from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims
+from sd_optimizer import sd_request
+import random, time
 
-from default_optimizer import default_optimazer
-
-VERSION2SPECS = {
-    "SDXL-base-1.0": {
-        "H": 1024,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "is_legacy": False,
-        "config": "configs/inference/sd_xl_base.yaml",
-        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
-    },
-    "SDXL-lora-1.0": {
-        "H": 1024,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "is_legacy": False,
-        "config": "configs/inference/sd_xl_lora.yaml",
-        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
-    },
-    "SDXL-base-0.9": {
-        "H": 1024,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "is_legacy": False,
-        "config": "configs/inference/sd_xl_base.yaml",
-        "ckpt": "checkpoints/sd_xl_base_0.9.safetensors",
-    },
-    "SD-2.1": {
-        "H": 512,
-        "W": 512,
-        "C": 4,
-        "f": 8,
-        "is_legacy": True,
-        "config": "configs/inference/sd_2_1.yaml",
-        "ckpt": "checkpoints/v2-1_512-ema-pruned.safetensors",
-    },
-    "SD-2.1-768": {
-        "H": 768,
-        "W": 768,
-        "C": 4,
-        "f": 8,
-        "is_legacy": True,
-        "config": "configs/inference/sd_2_1_768.yaml",
-        "ckpt": "checkpoints/v2-1_768-ema-pruned.safetensors",
-    },
-    "SDXL-refiner-0.9": {
-        "H": 1024,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "is_legacy": True,
-        "config": "configs/inference/sd_xl_refiner.yaml",
-        "ckpt": "checkpoints/sd_xl_refiner_0.9.safetensors",
-    },
-    "SDXL-refiner-1.0": {
-        "H": 1024,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "is_legacy": True,
-        "config": "configs/inference/sd_xl_refiner.yaml",
-        "ckpt": "checkpoints/sd_xl_refiner_1.0.safetensors",
-    },
-    "svd": {
-        "T": 14,
-        "H": 576,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "config": "configs/inference/svd.yaml",
-        "ckpt": "checkpoints/svd.safetensors",
-        "options": {
-            "discretization": 1,
-            "cfg": 2.5,
-            "sigma_min": 0.002,
-            "sigma_max": 700.0,
-            "rho": 7.0,
-            "guider": 2,
-            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
-            "num_steps": 25,
-        },
-    },
-    "svd_image_decoder": {
-        "T": 14,
-        "H": 576,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "config": "configs/inference/svd_image_decoder.yaml",
-        "ckpt": "checkpoints/svd_image_decoder.safetensors",
-        "options": {
-            "discretization": 1,
-            "cfg": 2.5,
-            "sigma_min": 0.002,
-            "sigma_max": 700.0,
-            "rho": 7.0,
-            "guider": 2,
-            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
-            "num_steps": 25,
-        },
-    },
-    "svd_xt": {
-        "T": 25,
-        "H": 576,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "config": "configs/inference/svd.yaml",
-        "ckpt": "checkpoints/svd_xt.safetensors",
-        "options": {
-            "discretization": 1,
-            "cfg": 3.0,
-            "min_cfg": 1.5,
-            "sigma_min": 0.002,
-            "sigma_max": 700.0,
-            "rho": 7.0,
-            "guider": 2,
-            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
-            "num_steps": 30,
-            "decoding_t": 14,
-        },
-    },
-    "svd_xt_image_decoder": {
-        "T": 25,
-        "H": 576,
-        "W": 1024,
-        "C": 4,
-        "f": 8,
-        "config": "configs/inference/svd_image_decoder.yaml",
-        "ckpt": "checkpoints/svd_xt_image_decoder.safetensors",
-        "options": {
-            "discretization": 1,
-            "cfg": 3.0,
-            "min_cfg": 1.5,
-            "sigma_min": 0.002,
-            "sigma_max": 700.0,
-            "rho": 7.0,
-            "guider": 2,
-            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
-            "num_steps": 30,
-            "decoding_t": 14,
-        },
-    },
-}
-
-class sd_request():
-    def __init__(
-            self, 
-            state: dict,
-            steps: int = 10,
-            video_task: bool = False,
-            prompt: str = None,
-            negative_prompt: str = None,
-            img_path: str = None,
-            lora_pth: str = None,
-            output_path: str = './outputs',
-            num_samples : int = 2,
-            ) -> None:
-        self.output_path = output_path
-        self.time = time.time()
-        self.id = self.time
-        self.state = 0
-        self.steps = steps
-        keys = list(set([x.input_key for x in state["model"].conditioner.embedders]))
-        self.sampling = {}
-        self.num_samples = num_samples
-        self.num_frames = state['T'] if video_task else 1
-        self.num = self.num_samples * self.num_frames
-        if lora_pth:
-            self.lora_dict= self.get_lora(lora_pth)
-        else:
-            self.lora_dict = None
-        if img_path and not video_task:
-            self.img, self.w, self.h = self.load_img(path=img_path)
-        
-        W = self.w if hasattr(self,'w') else state['W']
-        H = self.h if hasattr(self,'h') else state['H']
-        negative_prompt = negative_prompt if negative_prompt else ''
-       
-        self.value_dict = self.get_valuedict(keys, 
-                                             img_path, 
-                                             W, H, 
-                                             video_task=video_task, 
-                                             prompt=prompt, 
-                                             negative_prompt=negative_prompt)
-
-    def get_valuedict(self,
-                      keys,
-                      img,
-                      W,
-                      H,
-                      video_task=False, 
-                      prompt=None, 
-                      negative_prompt=None):
-        if video_task:
-            value_dict = init_embedder_options(
-            keys,
-            {},
+class sd_optimizer(Optimizer):
+    def __init__(self, config_file):
+        config = yaml.load(
+            stream=open(config_file, 'r'),
+            Loader=yaml.FullLoader
             )
-            img = load_img_for_prediction(W, H, display=False, key=img)
-            cond_aug = 0.02
-            value_dict["image_only_indicator"] = 0
-            value_dict["cond_frames_without_noise"] = img
-            value_dict["cond_frames"] = img + cond_aug * torch.randn_like(img)
-            value_dict["cond_aug"] = cond_aug
-            value_dict['num_samples'] = self.num_samples
-            value_dict['T'] = self.num_frames
-        else:
-            init_dict = {"orig_width": W,"orig_height": H,"target_width": W,"target_height": H,}
-            value_dict = init_embedder_options(
-            keys,
-            init_dict,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            )
-            value_dict['num_samples'] = self.num_samples
-            value_dict['T'] = self.num_frames
-            value_dict["num"] = self.num
-        return value_dict
-    
-    def load_img(self, path=None, display=False, device="cuda"):
-        image = Image.open(path)
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
-        if display:
-            print(image)
-        w, h = image.size
-        width, height = map(lambda x: x - x % 64, (w, h))  # resize to integer multiple of 64
-        image = image.resize((width, height))
-        image = np.array(image.convert("RGB"))
-        image = image[None].transpose(0, 3, 1, 2)
-        image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
-        return image.to(device), width, height
-    
-    def get_lora(self, lora_pth):
-        lora_dict = load_safetensors(lora_pth)
-        try:
-            rank = peft.LoraConfig.from_pretrained(lora_pth).r
-        except:
-            print('Rank not found')
-            rank = 8
-        return {'weights':lora_dict, 'rank':rank}
-    
-class sd_optimizer(default_optimazer):
-    def __init__(self, model_name: str, batch_option: int = 1, max_batch_size: int = 10, seed: int = 49, device: str = 'cuda', **kwargs):
-        super().__init__(model_name, batch_option, max_batch_size, seed, device, **kwargs)
-    
-    def init_model(self, **kwargs):
-        version_dict = VERSION2SPECS[self.model_name]
+        self.config = config
+        self.waitlists=[[],[],[]]
+        self.batch_configs = config['batch_configs']
+        seed = config.get('seed',49)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        seed_everything(seed)
+
+        self.model_name = config['model_name']
+        model_config = config['model']
         from sd_helper import init_model as init_sd
         from sd_helper import init_sampling
-        state = init_sd(version_dict, load_filter=True)
-        steps = kwargs.get('steps',30)
-        state['W'] = version_dict.get('W', 1024)
-        state['H'] = version_dict.get('H', 1024)
-        state['C'] = version_dict['C']
-        state['F'] = version_dict['f']
+        state = init_sd(model_config, load_filter=True)
+        steps = config.get('default_steps',10)
+        state['W'] = model_config.get('W', 1024)
+        state['H'] = model_config.get('H', 1024)
+        state['C'] = model_config.get('C', 4)
+        state['F'] = model_config.get('F', 8)
         state['T'] = 6 if self.model_name in ['svd'] else None
-        state['options'] = version_dict.get('options', {})
+        state['options'] = model_config.get('options', {})
         state['options']["num_frames"] = state['T']
         sampler = init_sampling(options=state['options'],steps=steps)
         state['sampler'] = sampler
@@ -287,13 +37,34 @@ class sd_optimizer(default_optimazer):
         state['img_sampler'] = img_sampler
         state['saving_fps'] = 6
         self.state = state
-        self.model = state['model']
         load_model(state['model'].model)
         load_model(state['model'].denoiser)
         print('Model loaded')
 
+    def runtime(self):
+        for i,waitlist in enumerate(self.waitlists):
+            if len(waitlist) == 0:
+                continue
+            batch_size = self.batch_configs[i]
+            if i!=1 and len(waitlist) < batch_size:
+                continue
+            batch = self.select(waitlist,batch_size)
+            for item in batch:
+                waitlist.remove(item)
+            
+            if i == 0:
+                self.preprocess(batch)
+            elif i == 1:
+                self.iteration(batch)
+            elif i == 2:
+                self.postprocess(batch)
+
+            for item in batch:
+                if isinstance(item.state,int):
+                    self.waitlists[item.state].append(item)
+
     def iteration(self, sampling, **kwargs):
-        model = self.model
+        model = self.state['model']
         
         sampler = self.state['img_sampler'] if hasattr(sampling[0],'img') else self.state['sampler']
         T = self.state.get('T')
@@ -409,9 +180,9 @@ class sd_optimizer(default_optimazer):
                                     'uc':iuc,
                                     'ami':ami,
                                     }
+                        i.state = 1
                         t = t + i.num
                         t2 = t2 + i.num_samples * 2
-                        self.wait_runtime.append(i)
         return encode_process
     
     def postprocess(self,decode_process,**kwargs):
@@ -446,9 +217,11 @@ class sd_optimizer(default_optimazer):
                 print('Saved',req.id)
                 data_log.append(time.time()-req.time)
                 t = t + req.num
+                req.state = None
                 del req
+
     def update_input(self):
-        if len(self.wait_preprocess) < self.batch_option:
+        if len(self.waitlists[0]) < self.batch_configs[0]:
             choice = random.choice(sentences)
             req = sd_request(
                         state=optimizer.state,
@@ -458,15 +231,11 @@ class sd_optimizer(default_optimazer):
                         #img_path='inputs/03.jpg',
                         num_samples=1,
                     )
-            self.wait_preprocess.append(req) 
+            self.waitlists[0].append(req)
 
     
 if __name__ == '__main__':
-    optimizer = sd_optimizer(
-        model_name='SD-2.1',
-        batch_option=32,
-        max_batch_size=32,
-        )
+    optimizer = sd_optimizer('configs/sd_21.yaml')
 
     mode = 'test'
     if mode == 'server':
@@ -498,14 +267,14 @@ if __name__ == '__main__':
             optimizer.update_input()
             if len(data_log) > 200:
                 break
-        optimizer.check_prepost()
         optimizer.runtime()
 
-    with open('data_log.json','w') as f:
+    file_name = f'data_log_{str(optimizer.batch_configs)}.json'
+    with open(file_name,'w') as f:
         import json
         data = {
-                'batch_size':optimizer.batch_option,
-                'iteration_batch_size':optimizer.max_batch_size,
+                'batch_configs':optimizer.batch_configs,
                 'data':data_log,
+                'avg':sum(data_log)/len(data_log),
         }
         json.dump(data,f,indent=4)

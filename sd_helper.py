@@ -524,7 +524,7 @@ def get_condition(
     H = state.get("H", H)
     W = state.get("W", W)
     F = state.get("F", F)
-    print("Getting condition for "+str(len(value_dicts))+" videos")
+    #print("Getting condition for "+str(len(value_dicts))+" videos")
     force_uc_zero_embeddings = default(force_uc_zero_embeddings, [])
     batch2model_input = default(batch2model_input, [])
     additional_batch_uc_fields = default(additional_batch_uc_fields, [])
