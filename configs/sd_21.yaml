@@ -1,5 +1,5 @@
 model_name: 'sd_2.1'
-batch_configs: [4,32,4]
+batch_configs: [64,64,64]
 model: {
         "H": 512,
         "W": 512,

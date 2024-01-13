@@ -39,6 +39,7 @@ class sd_optimizer(Optimizer):
         self.state = state
         load_model(state['model'].model)
         load_model(state['model'].denoiser)
+        load_model(state['model'].first_stage_model)
         print('Model loaded')
 
     def runtime(self):
@@ -46,7 +47,7 @@ class sd_optimizer(Optimizer):
             if len(waitlist) == 0:
                 continue
             batch_size = self.batch_configs[i]
-            if i!=1 and len(waitlist) < batch_size:
+            if i != 1 and len(waitlist) < batch_size:
                 continue
             batch = self.select(waitlist,batch_size)
             for item in batch:
@@ -194,11 +195,11 @@ class sd_optimizer(Optimizer):
         with torch.no_grad():
             with autocast("cuda"):
                 with model.ema_scope():
-                    load_model(model.first_stage_model)
+                    #load_model(model.first_stage_model)
                     model.en_and_decode_n_samples_a_time = 2
                     samples_x = model.decode_first_stage(samples_z)
                     samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
-                    unload_model(model.first_stage_model)
+                    #unload_model(model.first_stage_model)
 
                     if filter is not None:
                         samples = filter(samples)
@@ -233,6 +234,36 @@ class sd_optimizer(Optimizer):
                     )
             self.waitlists[0].append(req)
 
+    def model_latency_test(self, max_num, sentences):
+        output = {}
+        for i in range(1,max_num+1):
+            batch = []
+            for j in range(i):
+                choice = random.choice(sentences)
+                req = sd_request(
+                    state=optimizer.state,
+                    prompt=choice,
+                    num_samples=1)
+                batch.append(req)
+            s_time = time.time()
+            batch = self.preprocess(batch)
+            t1 = time.time() - s_time
+
+            s_time = time.time()
+            batch = self.iteration(batch)
+            t2 = time.time() - s_time
+
+            s_time = time.time()
+            self.postprocess(batch)
+            t3 = time.time() - s_time
+
+            output[str(i)] = [t1,t2,t3]
+            print(i,t1,t2,t3)
+        with open('model_latency.json','w') as f:
+            import json
+            json.dump(output,f,indent=4)
+        exit()
+
     
 if __name__ == '__main__':
     optimizer = sd_optimizer('configs/sd_21.yaml')
@@ -261,7 +292,7 @@ if __name__ == '__main__':
         dataset = load_dataset('lambdalabs/pokemon-blip-captions')
         sentences = dataset['train']['text']
         data_log = []
-
+    optimizer.model_latency_test(max_num=32,sentences=sentences)
     while True:
         if mode == 'test':
             optimizer.update_input()
