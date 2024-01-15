@@ -196,7 +196,7 @@ class sd_optimizer(Optimizer):
             with autocast("cuda"):
                 with model.ema_scope():
                     #load_model(model.first_stage_model)
-                    model.en_and_decode_n_samples_a_time = 2
+                    model.en_and_decode_n_samples_a_time = len(decode_process)
                     samples_x = model.decode_first_stage(samples_z)
                     samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
                     #unload_model(model.first_stage_model)
@@ -215,7 +215,7 @@ class sd_optimizer(Optimizer):
                 else:
                     output = samples[t:t+req.num]
                     #perform_save_locally(req.output_path, output)
-                print('Saved',req.id)
+                #print('Saved',req.id)
                 data_log.append(time.time()-req.time)
                 t = t + req.num
                 req.state = None
@@ -266,7 +266,7 @@ class sd_optimizer(Optimizer):
 
     
 if __name__ == '__main__':
-    optimizer = sd_optimizer('configs/sd_21.yaml')
+    optimizer = sd_optimizer('configs/sd_xl.yaml')
 
     mode = 'test'
     if mode == 'server':
@@ -292,11 +292,11 @@ if __name__ == '__main__':
         dataset = load_dataset('lambdalabs/pokemon-blip-captions')
         sentences = dataset['train']['text']
         data_log = []
-    optimizer.model_latency_test(max_num=32,sentences=sentences)
+    #optimizer.model_latency_test(max_num=16,sentences=sentences)
     while True:
         if mode == 'test':
             optimizer.update_input()
-            if len(data_log) > 200:
+            if len(data_log) >= 256:
                 break
         optimizer.runtime()
 
