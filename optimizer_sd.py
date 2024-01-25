@@ -196,7 +196,7 @@ class sd_optimizer(Optimizer):
             with autocast("cuda"):
                 with model.ema_scope():
                     #load_model(model.first_stage_model)
-                    model.en_and_decode_n_samples_a_time = 2
+                    model.en_and_decode_n_samples_a_time = len(decode_process)
                     samples_x = model.decode_first_stage(samples_z)
                     samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
                     #unload_model(model.first_stage_model)
