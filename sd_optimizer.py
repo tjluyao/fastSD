@@ -204,6 +204,8 @@ class sd_request():
                                              video_task=video_task, 
                                              prompt=prompt, 
                                              negative_prompt=negative_prompt)
+        
+        self.time_list=[self.time]
 
     def get_valuedict(self,
                       keys,
@@ -239,15 +241,16 @@ class sd_request():
             value_dict["num"] = self.num
         return value_dict
     
-    def load_img(self, path=None, display=False, device="cuda"):
-        image = Image.open(path)
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
+    def load_img(self, path=None, display=False, device="cuda", standard = 512):
+        if isinstance(path,str):
+            image = Image.open(path)
+        else:
+            image = path
         if display:
             print(image)
-        w, h = image.size
-        width, height = map(lambda x: x - x % 64, (w, h))  # resize to integer multiple of 64
-        image = image.resize((width, height))
+        width, height = image.size
+        #width, height = map(lambda x: x - x % 64, (w, h))  # resize to integer multiple of 64
+        image = image.resize((standard, standard))
         image = np.array(image.convert("RGB"))
         image = image[None].transpose(0, 3, 1, 2)
         image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0

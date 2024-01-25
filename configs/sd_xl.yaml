@@ -1,5 +1,7 @@
 model_name: 'sd_xl'
-batch_configs: [16,8,8]
+batch_configs: [32,32,32]
+lowvram_mode: False
+dtype: 'half'
 model: {
         "H": 1024,
         "W": 1024,

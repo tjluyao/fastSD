@@ -23,20 +23,16 @@ from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
                                                    LinearMultistepSampler,
                                                    EDMSampler,
                                                    )
-lowvram_mode = True
-
-def load_model(model):
-    model.cuda()
+def load_model(model,location=None):
+    if location:
+        device = 'cuda:'+str(location)
+        model.to(device)
+    else:
+        model.cuda()
 
 def unload_model(model):
-    global lowvram_mode
-    if lowvram_mode:
-        model.cpu()
-        torch.cuda.empty_cache()
-
-def set_lowvram_mode(mode):
-    global lowvram_mode
-    lowvram_mode = mode
+    model.cpu()
+    torch.cuda.empty_cache()
 
 def init_embedder_options(keys, init_dict, prompt=None, negative_prompt=None):
     # Hardcoded demo settings; might undergo some changes in the future
@@ -95,7 +91,7 @@ def init_embedder_options(keys, init_dict, prompt=None, negative_prompt=None):
 
     return value_dict
 
-def init_model(version_dict, load_ckpt=True, load_filter=True, verbose=True):
+def init_model(version_dict, load_ckpt=True, load_filter=True, verbose=True, dtype_half=True):
     state = dict()
     config = version_dict["config"]
     ckpt = version_dict["ckpt"]
@@ -125,8 +121,9 @@ def init_model(version_dict, load_ckpt=True, load_filter=True, verbose=True):
             print("unexpected keys:")
             print(u)
 
-    if lowvram_mode:
+    if dtype_half:
         model.model.half()
+        model.first_stage_model.half()
     else:
         model.cuda()
     
@@ -517,8 +514,9 @@ def get_condition(
         skip_encode=False,
         add_noise=True,
         offset_noise_level=0.0,
+        lowvram_mode=False,
         ):
-    model = state.get("model")
+    model = state.get("model", None)
     T = state.get("T", T)
     C = state.get("C", C)
     H = state.get("H", H)
@@ -532,9 +530,9 @@ def get_condition(
         with autocast("cuda"):
             with model.ema_scope():
                 num_batch = sum([obj['num_samples'] for obj in value_dicts])
-                #num_frames = sum([obj['T'] for obj in value_dicts])
                 num_samples = [num_batch, T] if T is not None else [num_batch]
-                load_model(model.conditioner)
+                if lowvram_mode:
+                    load_model(model.conditioner)
                 batch, batch_uc = get_batch(
                     model.conditioner,
                     value_dicts,
@@ -550,7 +548,8 @@ def get_condition(
                     force_cond_zero_embeddings=force_cond_zero_embeddings,
                     muti_input=muti_input,
                 )
-                unload_model(model.conditioner)
+                if lowvram_mode:
+                    unload_model(model.conditioner)
 
                 for k in c:
                     if not k == "crossattn":
@@ -591,9 +590,13 @@ def get_condition(
                     if skip_encode:
                         z = imgs
                     else:
-                        load_model(model.first_stage_model)
+                        if lowvram_mode:
+                            load_model(model.first_stage_model)
+                        imgs = imgs.to(model.first_stage_model.device)
                         z = model.encode_first_stage(imgs)
-                        unload_model(model.first_stage_model)
+                        z = z.cuda()
+                        if lowvram_mode:
+                            unload_model(model.first_stage_model)
                     noise = torch.randn_like(z)
                     sigmas = sampler.discretization(sampler.num_steps).cuda()
                     sigma = sigmas[0]
