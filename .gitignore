@@ -17,4 +17,4 @@ __pycache__/
 /src
 /lora_weights
 /inputs
-/datalog
+/results
