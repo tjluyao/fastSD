@@ -23,6 +23,8 @@ from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
                                                    LinearMultistepSampler,
                                                    EDMSampler,
                                                    )
+from sgm.modules.autoencoding.temporal_ae import VideoDecoder
+
 def load_model(model,location=None):
     if location:
         device = 'cuda:'+str(location)

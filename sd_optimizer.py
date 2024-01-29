@@ -241,7 +241,7 @@ class sd_request():
             value_dict["num"] = self.num
         return value_dict
     
-    def load_img(self, path=None, display=False, device="cuda", standard = 512):
+    def load_img(self, path=None, display=False, device="cpu", standard = 512):
         if isinstance(path,str):
             image = Image.open(path)
         else:

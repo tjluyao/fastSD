@@ -40,6 +40,7 @@ class sd_optimizer(Optimizer):
         state['img_sampler'] = img_sampler
         state['saving_fps'] = 6
         self.state = state
+        self.loop = 0
         if not self.lowvram_mode:
             self.load_all()
         print('Model loaded')
@@ -54,9 +55,12 @@ class sd_optimizer(Optimizer):
         for i,waitlist in enumerate(self.waitlists):
             if len(waitlist) == 0:
                 continue
+            elif i == 0 and self.loop % 2:
+                continue
+            elif i == 2 and self.loop:
+                continue
+
             batch_size = self.batch_configs[i]
-            if i != 1 and len(waitlist) < batch_size:
-                pass
             batch = self.select(waitlist,batch_size)
             for item in batch:
                 waitlist.remove(item)
@@ -81,6 +85,7 @@ class sd_optimizer(Optimizer):
                 else:
                     data_log.append(item.time_list)
                     del item
+        self.loop = (self.loop + 1) % 5
 
     def iteration(self, sampling, **kwargs):
         model = self.state['model']
@@ -140,7 +145,7 @@ class sd_optimizer(Optimizer):
                     t = 0
                     for i in sampling:
                         i.sampling['pic'] = samples[t:t+i.num]
-                        print('Finish step ',i.sampling['step'], i.id)
+                        #print('Finish step ',i.sampling['step'], i.id)
                         i.sampling['step'] = i.sampling['step'] + 1
                         t = t+i.num
                         if i.sampling['step'] >= i.sampling['num_sigmas'] - 1:
@@ -344,12 +349,24 @@ if __name__ == '__main__':
         #optimizer.model_latency_test(max_num=32,sentences=sentences, imgs=imgs, is_image=True)
 
         if time_generate:
+            generated = 0
             sleep_time = 1
-            input_num = 5
+            input_num = 1
             freq = input_num/sleep_time
             def timely_generate():
+                global generated
                 while True:
+                    flag = random.randint(1,100)
+                    l = generated
+                    bar = 20 + int(l*100/256) if len(data_log) <=256 else 120 - int((l-256)*100/256) 
+                    if bar > 100 and flag < bar-100:
+                        input_num = 2
+                    elif flag < bar:
+                        input_num = 1
+                    else:
+                        input_num = 0
                     optimizer.create_input(input_num)
+                    generated = generated + input_num
                     time.sleep(sleep_time)
             import threading
             t = threading.Thread(target=timely_generate)
@@ -372,6 +389,7 @@ if __name__ == '__main__':
         data = {
                 'batch_configs':optimizer.batch_configs,
                 'test_size':test_size,
+                'rolling': True,
                 #'avg':sum(data_log)/len(data_log),
                 'dtype': 'half' if optimizer.dtype_half else 'float',
                 'lowvram_mode': optimizer.lowvram_mode,
