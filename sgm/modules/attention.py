@@ -452,7 +452,73 @@ class MemoryEfficientCrossAttention(nn.Module):
             out = out[:, n_tokens_to_mask:]
         return self.to_out(out)
 
+#from flash_attn import flash_attn_func, flash_attn_varlen_func
+class FLASH_ATTENTION(nn.Module):
+    def __init__(
+        self,
+        query_dim,
+        context_dim=None,
+        heads=8,
+        dim_head=64,
+        dropout=0.0,
+    ):
+        super().__init__()
+        inner_dim = dim_head * heads
+        context_dim = default(context_dim, query_dim)
 
+        self.scale = dim_head**-0.5
+        self.heads = heads
+
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
+        )
+
+    def forward(
+        self,
+        x,
+        context=None,
+        mask=None,
+        additional_tokens=None,
+        n_times_crossframe_attn_in_self=0,
+    ):
+        h = self.heads
+
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            # add additional token
+            x = torch.cat([additional_tokens, x], dim=1)
+
+        q = self.to_q(x)
+        context = default(context, x)
+        k = self.to_k(context)
+        v = self.to_v(context)
+
+        if n_times_crossframe_attn_in_self:
+            # reprogramming cross-frame attention as in https://arxiv.org/abs/2303.13439
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            n_cp = x.shape[0] // n_times_crossframe_attn_in_self
+            k = repeat(
+                k[::n_times_crossframe_attn_in_self], "b ... -> (b n) ...", n=n_cp
+            )
+            v = repeat(
+                v[::n_times_crossframe_attn_in_self], "b ... -> (b n) ...", n=n_cp
+            )
+
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
+        out = flash_attn_func(q,k,v,dropout_p=0.0, softmax_scale=None, causal=False)
+        del q, k, v
+        out = rearrange(out, "b h n d -> b n (h d)", h=h)
+
+        if additional_tokens is not None:
+            # remove additional token
+            out = out[:, n_tokens_to_mask:]
+        return self.to_out(out)
+    
 class BasicTransformerBlock(nn.Module):
     ATTENTION_MODES = {
         "softmax": CrossAttention,  # vanilla attention

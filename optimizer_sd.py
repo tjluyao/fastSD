@@ -20,7 +20,10 @@ class sd_optimizer(Optimizer):
         model_config = config['model']
         from sd_helper import init_model as init_sd
         from sd_helper import init_sampling
-        state = init_sd(model_config, load_filter=True)
+        self.lowvram_mode = config.get('lowvram_mode',False)
+        self.dtype_half = True if config.get('dtype', None) == 'half' else False
+        print('Loading model'+' in lowvram'if self.lowvram_mode else '')
+        state = init_sd(model_config, load_filter=True, dtype_half=self.dtype_half)
         steps = config.get('default_steps',10)
         state['W'] = model_config.get('W', 1024)
         state['H'] = model_config.get('H', 1024)
@@ -37,38 +40,60 @@ class sd_optimizer(Optimizer):
         state['img_sampler'] = img_sampler
         state['saving_fps'] = 6
         self.state = state
-        load_model(state['model'].model)
-        load_model(state['model'].denoiser)
-        load_model(state['model'].first_stage_model)
+        self.loop = 0
+        if not self.lowvram_mode:
+            self.load_all()
         print('Model loaded')
+    
+    def load_all(self):
+        load_model(self.state['model'].model)
+        load_model(self.state['model'].conditioner)
+        load_model(self.state['model'].denoiser)
+        load_model(self.state['model'].first_stage_model,location=1)
 
     def runtime(self):
         for i,waitlist in enumerate(self.waitlists):
             if len(waitlist) == 0:
                 continue
-            batch_size = self.batch_configs[i]
-            if i != 1 and len(waitlist) < batch_size:
+            elif i == 0 and self.loop % 2:
                 continue
+            elif i == 2 and self.loop:
+                continue
+
+            batch_size = self.batch_configs[i]
             batch = self.select(waitlist,batch_size)
             for item in batch:
                 waitlist.remove(item)
             
             if i == 0:
+                t_start = time.time()
                 self.preprocess(batch)
+                t_end = time.time()
             elif i == 1:
+                t_start = time.time()
                 self.iteration(batch)
+                t_end = time.time()
             elif i == 2:
+                t_start = time.time()
                 self.postprocess(batch)
+                t_end = time.time()
 
             for item in batch:
+                item.time_list = item.time_list + [t_start, t_end]
                 if isinstance(item.state,int):
                     self.waitlists[item.state].append(item)
+                else:
+                    data_log.append(item.time_list)
+                    del item
+        self.loop = (self.loop + 1) % 5
 
     def iteration(self, sampling, **kwargs):
         model = self.state['model']
-        
         sampler = self.state['img_sampler'] if hasattr(sampling[0],'img') else self.state['sampler']
         T = self.state.get('T')
+        if self.lowvram_mode:
+            load_model(model.model)
+            load_model(model.denoiser)
         with torch.no_grad():
             with autocast("cuda"):
                 with model.ema_scope():
@@ -116,18 +141,21 @@ class sd_optimizer(Optimizer):
                     def denoiser(input, sigma, c):
                         return self.state["model"].denoiser(self.state["model"].model, input, sigma, c, **additional_model_inputs)
                     samples = sampler.sampler_step_g(begin,end,denoiser,x,cond,uc) if isinstance(sampler, EDMSampler) else sampler.sampler_step(begin,end,denoiser,x,cond,uc)
-                                        
+                    
                     t = 0
                     for i in sampling:
                         i.sampling['pic'] = samples[t:t+i.num]
-                        print('Finish step ',i.sampling['step'], i.id)
+                        #print('Finish step ',i.sampling['step'], i.id)
                         i.sampling['step'] = i.sampling['step'] + 1
                         t = t+i.num
                         if i.sampling['step'] >= i.sampling['num_sigmas'] - 1:
                             print('Finish sampling',i.id)
                             i.sample_z = i.sampling['pic']
                             i.state = 2
-                    return sampling
+        if self.lowvram_mode:
+            unload_model(model.model)
+            unload_model(model.denoiser)
+        return sampling
     
     def preprocess(self, encode_process, **kwargs):
         state = self.state
@@ -147,6 +175,8 @@ class sd_optimizer(Optimizer):
                         for req in encode_process:
                             imgs += [req.img]*req.num
                         imgs = torch.cat(imgs, dim=0)
+                        if self.dtype_half: 
+                            imgs = imgs.half()
                     z, c, uc, additional_model_inputs= get_condition(
                         state,
                         value_dicts, 
@@ -157,7 +187,9 @@ class sd_optimizer(Optimizer):
                         force_cond_zero_embeddings=options.get("force_cond_zero_embeddings", None),
                         muti_input=muti_input,
                         imgs=imgs if is_image else None,
+                        lowvram_mode=self.lowvram_mode,
                         )
+                    
                     t = 0
                     t2 = 0
                     for i in encode_process:
@@ -191,15 +223,17 @@ class sd_optimizer(Optimizer):
         model = state.get('model')
         filter = state.get('filter', None)
         return_latents = kwargs.get('return_latents', False)
-        samples_z = torch.cat([req.sampling['pic'] for req in decode_process], dim=0)
+        samples_z = torch.cat([req.sampling['pic'] for req in decode_process], dim=0).to(model.first_stage_model.dtype).to(model.first_stage_model.device)
         with torch.no_grad():
             with autocast("cuda"):
                 with model.ema_scope():
-                    #load_model(model.first_stage_model)
+                    if self.lowvram_mode:
+                        load_model(model.first_stage_model)
                     model.en_and_decode_n_samples_a_time = len(decode_process)
                     samples_x = model.decode_first_stage(samples_z)
                     samples = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
-                    #unload_model(model.first_stage_model)
+                    if self.lowvram_mode:
+                        unload_model(model.first_stage_model)
 
                     if filter is not None:
                         samples = filter(samples)
@@ -216,12 +250,11 @@ class sd_optimizer(Optimizer):
                     output = samples[t:t+req.num]
                     #perform_save_locally(req.output_path, output)
                 #print('Saved',req.id)
-                data_log.append(time.time()-req.time)
+                #data_log.append(time.time()-req.time)
                 t = t + req.num
                 req.state = None
-                del req
 
-    def update_input(self):
+    def fill_input(self):
         if len(self.waitlists[0]) < self.batch_configs[0]:
             choice = random.choice(sentences)
             req = sd_request(
@@ -234,16 +267,34 @@ class sd_optimizer(Optimizer):
                     )
             self.waitlists[0].append(req)
 
-    def model_latency_test(self, max_num, sentences):
+    def create_input(self,num,is_image=False):
+        requests = []
+        for i in range(num):
+            choice = random.choice(sentences)
+            req = sd_request(
+                        state=optimizer.state,
+                        prompt=choice,
+                        #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
+                        video_task=False,
+                        img_path='inputs/00.jpg' if is_image else None,
+                        num_samples=1,
+                    )
+            requests.append(req)
+        self.waitlists[0] = self.waitlists[0] + requests
+
+    def model_latency_test(self, max_num, sentences, imgs=None, is_image=False):
         output = {}
         for i in range(1,max_num+1):
             batch = []
             for j in range(i):
                 choice = random.choice(sentences)
+                im = random.choice(imgs) if is_image else None
                 req = sd_request(
                     state=optimizer.state,
                     prompt=choice,
-                    num_samples=1)
+                    num_samples=1,
+                    img_path=im
+                    )
                 batch.append(req)
             s_time = time.time()
             batch = self.preprocess(batch)
@@ -258,6 +309,7 @@ class sd_optimizer(Optimizer):
             t3 = time.time() - s_time
 
             output[str(i)] = [t1,t2,t3]
+            torch.cuda.empty_cache()
             print(i,t1,t2,t3)
         with open('model_latency.json','w') as f:
             import json
@@ -279,7 +331,7 @@ if __name__ == '__main__':
                         prompt=usr_input,
                         #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
                         video_task=False,
-                        #img_path='inputs/03.jpg',
+                        #img_path='inputs/00.jpg',
                     )
                     optimizer.wait_preprocess.append(req) 
 
@@ -288,24 +340,60 @@ if __name__ == '__main__':
         t.daemon = True
         t.start()
     elif mode == 'test':
+        time_generate = True
         from datasets import load_dataset
         dataset = load_dataset('lambdalabs/pokemon-blip-captions')
+        imgs = dataset['train']['image']
         sentences = dataset['train']['text']
         data_log = []
-    #optimizer.model_latency_test(max_num=16,sentences=sentences)
+        #optimizer.model_latency_test(max_num=32,sentences=sentences, imgs=imgs, is_image=True)
+
+        if time_generate:
+            generated = 0
+            sleep_time = 1
+            input_num = 1
+            freq = input_num/sleep_time
+            def timely_generate():
+                global generated
+                while True:
+                    flag = random.randint(1,100)
+                    l = generated
+                    bar = 20 + int(l*100/256) if len(data_log) <=256 else 120 - int((l-256)*100/256) 
+                    if bar > 100 and flag < bar-100:
+                        input_num = 2
+                    elif flag < bar:
+                        input_num = 1
+                    else:
+                        input_num = 0
+                    optimizer.create_input(input_num)
+                    generated = generated + input_num
+                    time.sleep(sleep_time)
+            import threading
+            t = threading.Thread(target=timely_generate)
+            t.daemon = True
+            t.start()
+        else:
+            optimizer.create_input(256)
+
+    test_size=512
     while True:
         if mode == 'test':
-            optimizer.update_input()
-            if len(data_log) >= 256:
+            #optimizer.fill_input()
+            if len(data_log) >= test_size:
                 break
         optimizer.runtime()
 
-    file_name = f'data_log_{str(optimizer.batch_configs)}.json'
+    file_name = f'data_log_{optimizer.batch_configs}.json'
     with open(file_name,'w') as f:
         import json
         data = {
                 'batch_configs':optimizer.batch_configs,
+                'test_size':test_size,
+                'rolling': True,
+                #'avg':sum(data_log)/len(data_log),
+                'dtype': 'half' if optimizer.dtype_half else 'float',
+                'lowvram_mode': optimizer.lowvram_mode,
+                'generate_speed': freq if time_generate else None,
                 'data':data_log,
-                'avg':sum(data_log)/len(data_log),
         }
         json.dump(data,f,indent=4)
