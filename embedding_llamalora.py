@@ -1,3 +1,7 @@
+'''
+Add embedding process to Llama multi-lora model
+'''
+
 from punica import BatchedKvCache, BatchLenInfo, BatchedLlamaLoraWeight, LoraWeight, BatchedLoraWeight
 from punica.ops import append_kv, batch_decode, batch_prefill, init_kv, rms_norm
 from punica.ops import (

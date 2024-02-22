@@ -245,12 +245,12 @@ class sd_optimizer(Optimizer):
             for req in decode_process:
                 if self.state['T']:
                     output = samples[t:t+req.num]
-                    save_video_as_grid_and_mp4(output, req.output_path, self.state['T'], self.state['saving_fps'])
+                    self.output = output
+                    #save_video_as_grid_and_mp4(output, req.output_path, self.state['T'], self.state['saving_fps'])
                 else:
                     output = samples[t:t+req.num]
+                    self.output = output
                     #perform_save_locally(req.output_path, output)
-                #print('Saved',req.id)
-                #data_log.append(time.time()-req.time)
                 t = t + req.num
                 req.state = None
 

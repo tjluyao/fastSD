@@ -177,6 +177,7 @@ class sd_request():
             output_path: str = './outputs',
             num_samples : int = 2,
             ) -> None:
+        self.output = None
         self.output_path = output_path
         self.time = time.time()
         self.id = self.time

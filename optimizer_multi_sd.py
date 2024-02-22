@@ -1,3 +1,8 @@
+'''
+Some Bugs in Mutiprocessing using python & cuda
+Maybe need C/C++
+'''
+
 from optimizer import Optimizer, yaml, seed_everything
 from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, VideoDecoder
 import random, time, copy, os
