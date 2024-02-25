@@ -1,5 +1,5 @@
 from optimizer import Optimizer, yaml, seed_everything
-from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims
+from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, rearrange
 from sd_optimizer import sd_request
 import random, time
 
@@ -245,12 +245,12 @@ class sd_optimizer(Optimizer):
             for req in decode_process:
                 if self.state['T']:
                     output = samples[t:t+req.num]
-                    self.output = output
+                    req.output = 255.0 * rearrange(output[0].cpu().numpy(), "c h w -> h w c")
                     #save_video_as_grid_and_mp4(output, req.output_path, self.state['T'], self.state['saving_fps'])
                 else:
                     output = samples[t:t+req.num]
-                    self.output = output
-                    #perform_save_locally(req.output_path, output)
+                    req.output = 255.0 * rearrange(output[0].cpu().numpy(), "c h w -> h w c")
+                    perform_save_locally(req.output_path, output)
                 t = t + req.num
                 req.state = None
 
