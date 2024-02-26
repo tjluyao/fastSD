@@ -1,5 +1,6 @@
 model_name: 'sd_xl'
 batch_configs: [32,32,32]
+locations: [0,0,1]
 lowvram_mode: False
 dtype: 'half'
 model: {

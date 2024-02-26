@@ -2,6 +2,7 @@ from optimizer import Optimizer, yaml, seed_everything
 from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, rearrange
 from sd_optimizer import sd_request
 import random, time
+from torchvision.utils import make_grid
 
 class sd_optimizer(Optimizer):
     def __init__(self, config_file):
@@ -29,35 +30,30 @@ class sd_optimizer(Optimizer):
         state['H'] = model_config.get('H', 1024)
         state['C'] = model_config.get('C', 4)
         state['F'] = model_config.get('F', 8)
-        state['T'] = 6 if self.model_name in ['svd'] else None
+        state['T'] = model_config.get('T', 6) if self.model_name in ['svd'] else None
         state['options'] = model_config.get('options', {})
         state['options']["num_frames"] = state['T']
         sampler = init_sampling(options=state['options'],steps=steps)
         state['sampler'] = sampler
-        img_sampler = init_sampling(options=state['options'],
+        state['img_sampler'] = init_sampling(options=state['options'],
                                     img2img_strength=0.75,
-                                    steps=steps)
-        state['img_sampler'] = img_sampler
+                                    steps=steps) if state['T'] is None else None
         state['saving_fps'] = 6
         self.state = state
-        self.loop = 0
+        self.locations = config.get('locations', ['cuda:0','cuda:0','cuda:1'])
         if not self.lowvram_mode:
-            self.load_all()
+            self.load_all(locations= self.locations)
         print('Model loaded')
     
-    def load_all(self):
-        load_model(self.state['model'].model)
-        load_model(self.state['model'].conditioner)
-        load_model(self.state['model'].denoiser)
-        load_model(self.state['model'].first_stage_model,location=1)
+    def load_all(self, locations=['cuda:0','cuda:0','cuda:0']):
+        load_model(self.state['model'].conditioner,location=locations[0])
+        load_model(self.state['model'].model,location=locations[1])
+        load_model(self.state['model'].denoiser, location=locations[1])
+        load_model(self.state['model'].first_stage_model, location=locations[2])
 
     def runtime(self):
         for i,waitlist in enumerate(self.waitlists):
             if len(waitlist) == 0:
-                continue
-            elif i == 0 and self.loop % 2:
-                continue
-            elif i == 2 and self.loop:
                 continue
 
             batch_size = self.batch_configs[i]
@@ -83,9 +79,7 @@ class sd_optimizer(Optimizer):
                 if isinstance(item.state,int):
                     self.waitlists[item.state].append(item)
                 else:
-                    data_log.append(item.time_list)
                     del item
-        self.loop = (self.loop + 1) % 5
 
     def iteration(self, sampling, **kwargs):
         model = self.state['model']
@@ -107,28 +101,28 @@ class sd_optimizer(Optimizer):
                                 eps = torch.randn_like(i.sampling['pic']) * sampler.s_noise
                                 i.sampling['pic'] = i.sampling['pic'] + eps * append_dims(sigma_hat**2 - sigma**2, x.ndim) ** 0.5            
                             begin.append(sigma_hat)
-                        begin = torch.cat(begin,dim=0)
+                        begin = torch.cat(begin,dim=0).to(self.locations[1])
                     else: 
-                        begin = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step']] for i in sampling], dim=0)
+                        begin = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step']] for i in sampling], dim=0).to(self.locations[1])
                                 
-                    x = torch.cat([i.sampling['pic'] for i in sampling], dim=0)
-                    end = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step'] + 1] for i in sampling], dim=0)
+                    x = torch.cat([i.sampling['pic'] for i in sampling], dim=0).to(self.locations[1])
+                    end = torch.cat([i.sampling['s_in'] * i.sampling['sigmas'][i.sampling['step'] + 1] for i in sampling], dim=0).to(self.locations[1])
 
                     dict_list = [d.sampling['c'] for d in sampling]
                     cond = {}
                     for key in dict_list[0]:
-                        cond[key] = torch.cat([d[key] for d in dict_list], dim=0)
+                        cond[key] = torch.cat([d[key] for d in dict_list], dim=0).to(self.locations[1])
 
                     dict_list = [d.sampling['uc'] for d in sampling]
                     uc = {}
                     for key in dict_list[0]:
-                        uc[key] = torch.cat([d[key] for d in dict_list], dim=0)
+                        uc[key] = torch.cat([d[key] for d in dict_list], dim=0).to(self.locations[1])
 
                     dict_list = [d.sampling['ami'] for d in sampling] 
                     additional_model_inputs = {}
                     for key in dict_list[0]:
                         if key == "image_only_indicator":
-                            additional_model_inputs[key] = torch.cat([d[key] for d in dict_list], dim=0)
+                            additional_model_inputs[key] = torch.cat([d[key] for d in dict_list], dim=0).to(self.locations[1])
                         elif key == "num_video_frames":
                             additional_model_inputs[key] = T
                     lora_dicts = []
@@ -245,7 +239,9 @@ class sd_optimizer(Optimizer):
             for req in decode_process:
                 if self.state['T']:
                     output = samples[t:t+req.num]
-                    req.output = 255.0 * rearrange(output[0].cpu().numpy(), "c h w -> h w c")
+                    img = make_grid(output, nrow=5)
+                    req.output = img.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
+                    perform_save_locally(req.output_path, output)
                     #save_video_as_grid_and_mp4(output, req.output_path, self.state['T'], self.state['saving_fps'])
                 else:
                     output = samples[t:t+req.num]
@@ -262,7 +258,6 @@ class sd_optimizer(Optimizer):
                         prompt=choice,
                         #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
                         video_task=False,
-                        #img_path='inputs/03.jpg',
                         num_samples=1,
                     )
             self.waitlists[0].append(req)
@@ -276,7 +271,7 @@ class sd_optimizer(Optimizer):
                         prompt=choice,
                         #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
                         video_task=False,
-                        img_path='inputs/00.jpg' if is_image else None,
+                        image='inputs/00.jpg' if is_image else None,
                         num_samples=1,
                     )
             requests.append(req)
@@ -293,7 +288,7 @@ class sd_optimizer(Optimizer):
                     state=optimizer.state,
                     prompt=choice,
                     num_samples=1,
-                    img_path=im
+                    image=im
                     )
                 batch.append(req)
             s_time = time.time()
@@ -318,9 +313,9 @@ class sd_optimizer(Optimizer):
 
     
 if __name__ == '__main__':
-    optimizer = sd_optimizer('configs/sd_xl.yaml')
+    optimizer = sd_optimizer('configs/svd.yaml')
 
-    mode = 'test'
+    mode = 'server'
     if mode == 'server':
         def get_usr_input():
             while True:
@@ -330,10 +325,11 @@ if __name__ == '__main__':
                         state=optimizer.state,
                         prompt=usr_input,
                         #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
-                        video_task=False,
-                        #img_path='inputs/00.jpg',
+                        video_task=True,
+                        image='inputs/00.jpg',
+                        num_samples=1,
                     )
-                    optimizer.wait_preprocess.append(req) 
+                    optimizer.waitlists[0].append(req) 
 
         import threading
         t = threading.Thread(target=get_usr_input)

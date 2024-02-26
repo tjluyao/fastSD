@@ -1,7 +1,7 @@
 import torch
 import copy
 import math
-import os
+import os, io
 from torch import autocast
 from torchvision import transforms
 from safetensors.torch import load_file as load_safetensors
@@ -27,8 +27,7 @@ from sgm.modules.autoencoding.temporal_ae import VideoDecoder
 
 def load_model(model,location=None):
     if location:
-        device = 'cuda:'+str(location)
-        model.to(device)
+        model.to(location)
     else:
         model.cuda()
 
@@ -125,9 +124,7 @@ def init_model(version_dict, load_ckpt=True, load_filter=True, verbose=True, dty
 
     if dtype_half:
         model.model.half()
-        model.first_stage_model.half()
-    else:
-        model.cuda()
+        #model.first_stage_model.half()
     
     model.eval()
     state["msg"] = None
@@ -166,7 +163,14 @@ def load_img(display=True,
 def get_interactive_image(key=None) -> Image.Image:
     image = key
     if image is not None:
-        image = Image.open(image)
+        if isinstance(image, str):
+            image = Image.open(image)
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        elif isinstance(image, Image.Image):
+            pass
+        else:
+            raise ValueError(f"unknown image type {type(image)}")
         if not image.mode == "RGB":
             image = image.convert("RGB")
         return image

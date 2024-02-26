@@ -5,46 +5,39 @@ from flask import Flask, request, send_file
 import asyncio
 from PIL import Image
 import numpy as np
-import threading
+import threading, multiprocessing
 
-class sd_server(sd_optimizer):
-    def __init__(self, config_file):
-        super().__init__(config_file)
+class sd_server():
+    def __init__(self, config_files):
+        self.optimizers = []
+        for file in config_files:
+            optimizer = sd_optimizer(file)
+            self.optimizers.append(optimizer)
 
     def runtime(self):
         while True:
-            for i,waitlist in enumerate(self.waitlists):
-                if len(waitlist) == 0:
-                    continue
+            for optimizer in self.optimizers:
+                for i,waitlist in enumerate(optimizer.waitlists):
+                    if len(waitlist) == 0:
+                        continue
 
-                batch_size = self.batch_configs[i]
-                batch = self.select(waitlist,batch_size)
-                for item in batch:
-                    waitlist.remove(item)
-                
-                if i == 0:
-                    self.preprocess(batch)
-                elif i == 1:
-                    self.iteration(batch)
-                elif i == 2:
-                    self.postprocess(batch)
+                    batch_size = optimizer.batch_configs[i]
+                    batch = optimizer.select(waitlist,batch_size)
+                    for item in batch:
+                        waitlist.remove(item)
+                    
+                    if i == 0:
+                        optimizer.preprocess(batch)
+                    elif i == 1:
+                        optimizer.iteration(batch)
+                    elif i == 2:
+                        optimizer.postprocess(batch)
 
-                for item in batch:
-                    if isinstance(item.state,int):
-                        self.waitlists[item.state].append(item)
-                    else:
-                        pass
-
-    def respond(self, text):
-        req = sd_request(
-                        state=self.state,
-                        prompt=text,
-                        #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
-                        video_task=False,
-                        #img_path='inputs/00.jpg' if is_image else None,
-                        num_samples=1,
-                    )
-        self.waitlists[0].append(req)
+                    for item in batch:
+                        if isinstance(item.state,int):
+                            optimizer.waitlists[item.state].append(item)
+                        else:
+                            pass
 
 app = Flask(__name__)
 @app.route('/', methods=['POST', 'GET'])
@@ -52,17 +45,29 @@ async def handle_request():
     if request.method == 'POST':
 
         data = request.get_json()  
-        req = sd_request(
+        if data['model_name'] == 'stable_diffusion 2.1':
+            optimizer = server.optimizers[0]
+            req = sd_request(
                         state=optimizer.state,
                         prompt=data['prompt'],
                         video_task=False,
                         num_samples=1,
                     )
+        else:
+            optimizer = server.optimizers[1]
+            img = Image.fromarray(np.uint8(data['img_in']))
+            req = sd_request(
+                        state=optimizer.state,
+                        prompt=data['prompt'],
+                        video_task=True,
+                        image=img,
+                        num_samples=1,
+                    )
+        
         optimizer.waitlists[0].append(req)
         print('Request added')
         while req.output is None:
-            await asyncio.sleep(1)
-            print('waiting for result...')
+            await asyncio.sleep(0.1)
         
         img = Image.fromarray(np.uint8(req.output))
         image_stream = BytesIO()
@@ -75,7 +80,7 @@ async def handle_request():
         return 'Received GET request'
 
 if __name__ == '__main__':
-    optimizer = sd_server(config_file='configs/sd_21_512.yaml')
-    backend_thread = threading.Thread(target=optimizer.runtime, daemon=True)
-    backend_thread.start()
+    server = sd_server(config_files=['configs/sd_21_512.yaml','configs/svd.yaml'])
+    backend_process = threading.Thread(target=server.runtime, daemon=True)
+    backend_process.start()
     app.run()   # Start the server

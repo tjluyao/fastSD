@@ -172,7 +172,7 @@ class sd_request():
             video_task: bool = False,
             prompt: str = None,
             negative_prompt: str = None,
-            img_path: str = None,
+            image: str|Image.Image|np.ndarray = None,
             lora_pth: str = None,
             output_path: str = './outputs',
             num_samples : int = 2,
@@ -192,15 +192,15 @@ class sd_request():
             self.lora_dict= self.get_lora(lora_pth)
         else:
             self.lora_dict = None
-        if img_path and not video_task:
-            self.img, self.w, self.h = self.load_img(path=img_path)
+        if image and not video_task:
+            self.img, self.w, self.h = self.load_img(path=image)
         
         W = self.w if hasattr(self,'w') else state['W']
         H = self.h if hasattr(self,'h') else state['H']
         negative_prompt = negative_prompt if negative_prompt else ''
        
         self.value_dict = self.get_valuedict(keys, 
-                                             img_path, 
+                                             image, 
                                              W, H, 
                                              video_task=video_task, 
                                              prompt=prompt, 
