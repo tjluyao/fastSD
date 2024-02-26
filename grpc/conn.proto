@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package conn;
+
+service Txt2ImgService {
+  rpc Txt2Img(ImageRequest) returns (ImageResponse) {}
+}
+
+message ImageRequest {
+  string prompt = 1;
+}
+
+message ImageResponse {
+  bytes image_data = 1;
+}
+
+message VideoRequest {
+  string message = 1;
+  bytes image_data = 2;
+}
+
+message VideoResponse {
+  bytes video_data = 1;
+}
