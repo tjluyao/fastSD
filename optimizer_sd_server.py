@@ -44,12 +44,29 @@ app = Flask(__name__)
 async def handle_request():
     if request.method == 'POST':
         data = request.get_json()  
-        if data['model_name'] == 'stable_diffusion 2.1':
-            optimizer = server.optimizers[0]
+        if data['model_name'] in ['stable_diffusion 2.1',
+                                  'stable_diffusion xl',
+                                  'stable_diffusion xl-turbo',
+                                  'stable_diffusion-turbo']:
+            if data['model_name'] == 'stable_diffusion 2.1':
+                optimizer = server.optimizers[0]
+            elif data['model_name'] == 'stable_diffusion xl':
+                pass
+            elif data['model_name'] == 'stable_diffusion xl-turbo':
+                optimizer = server.optimizers[2]
+            elif data['model_name'] == 'stable_diffusion-turbo':
+                pass
+            else:
+                raise ValueError('Invalid model name')
+            
+            img = data.get('img_in',None)
+            if img is not None:
+                img = Image.fromarray(np.uint8(img))
             req = sd_request(
                         state=optimizer.state,
                         prompt=data['prompt'],
                         video_task=False,
+                        image = img,
                         num_samples=1,
                     )
             optimizer.waitlists[0].append(req)
@@ -62,8 +79,8 @@ async def handle_request():
             image_stream.seek(0)
             print('Request sending')
             return send_file(image_stream, mimetype='image/jpeg')
-            
-        else:
+        
+        elif data['model_name'] == 'Stable Video Diffusion':
             optimizer = server.optimizers[1]
             img = Image.fromarray(np.uint8(data['img_in']))
             req = sd_request(
@@ -78,11 +95,15 @@ async def handle_request():
             while req.output is None:
                 await asyncio.sleep(0.1)
             return send_file(req.output, mimetype='video/mp4')
+        
     elif request.method == 'GET':
         return 'Received GET request'
 
 if __name__ == '__main__':
-    server = sd_server(config_files=['configs/sd_21_512.yaml','configs/svd.yaml'])
+    server = sd_server(config_files=['configs/sd_21_512.yaml',
+                                     'configs/svd.yaml',
+                                     'configs/sdxl_turbo.yaml'
+                                     ])
     backend_process = threading.Thread(target=server.runtime, daemon=True)
     backend_process.start()
     app.run()   # Start the server

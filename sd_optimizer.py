@@ -14,6 +14,7 @@ from sd_helper import (init_embedder_options,
                        load_model, 
                        unload_model,
                        save_video_as_grid_and_mp4,
+                       get_interactive_image,
                        perform_save_locally)
 
 from default_optimizer import default_optimazer
@@ -193,7 +194,10 @@ class sd_request():
         else:
             self.lora_dict = None
         if image and not video_task:
-            self.img, self.w, self.h = self.load_img(path=image)
+            self.img, self.w, self.h = self.load_img(path=image, 
+                                                     device=state['locations'][0],
+                                                     size=(state['W'], state['H'])
+                                                     )
         
         W = self.w if hasattr(self,'w') else state['W']
         H = self.h if hasattr(self,'h') else state['H']
@@ -242,16 +246,11 @@ class sd_request():
             value_dict["num"] = self.num
         return value_dict
     
-    def load_img(self, path=None, display=False, device="cpu", standard = 512):
-        if isinstance(path,str):
-            image = Image.open(path)
-        else:
-            image = path
-        if display:
-            print(image)
+    def load_img(self, path=None, device="cpu", size=(512,512)):
+        image = get_interactive_image(path)
         width, height = image.size
         #width, height = map(lambda x: x - x % 64, (w, h))  # resize to integer multiple of 64
-        image = image.resize((standard, standard))
+        image = image.resize(size)
         image = np.array(image.convert("RGB"))
         image = image[None].transpose(0, 3, 1, 2)
         image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0

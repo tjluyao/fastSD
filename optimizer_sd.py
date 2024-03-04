@@ -2,7 +2,6 @@ from optimizer import Optimizer, yaml, seed_everything
 from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, rearrange, image_to_video
 from sd_optimizer import sd_request
 import random, time
-from torchvision.utils import make_grid
 
 class sd_optimizer(Optimizer):
     def __init__(self, config_file):
@@ -14,7 +13,6 @@ class sd_optimizer(Optimizer):
         self.waitlists=[[],[],[]]
         self.batch_configs = config['batch_configs']
         seed = config.get('seed',49)
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         seed_everything(seed)
 
         self.model_name = config['model_name']
@@ -33,14 +31,15 @@ class sd_optimizer(Optimizer):
         state['T'] = model_config.get('T', 6) if self.model_name in ['svd'] else None
         state['options'] = model_config.get('options', {})
         state['options']["num_frames"] = state['T']
-        sampler = init_sampling(options=state['options'],steps=steps)
+        sampler = init_sampling(options=state['options'], steps=steps, turbo=config.get('turbo',False))
         state['sampler'] = sampler
         state['img_sampler'] = init_sampling(options=state['options'],
                                     img2img_strength=0.75,
                                     steps=steps) if state['T'] is None else None
-        state['saving_fps'] = 6
+        state['saving_fps'] = config.get('saving_fps', 6)
         self.state = state
         self.locations = config.get('locations', ['cuda:0','cuda:0','cuda:1'])
+        state['locations'] = self.locations
         if not self.lowvram_mode:
             self.load_all(locations= self.locations)
         print('Model loaded')
@@ -158,7 +157,6 @@ class sd_optimizer(Optimizer):
         sampler = state['img_sampler'] if is_image else state['sampler']
         options = state.get('options')
         T = state.get('T')
-        muti_input = state.get('muti_input', True)
         with torch.no_grad():
             with autocast("cuda"):
                 with model.ema_scope():
@@ -179,7 +177,6 @@ class sd_optimizer(Optimizer):
                         batch2model_input=batch2model_input,
                         force_uc_zero_embeddings=options.get("force_uc_zero_embeddings", None),
                         force_cond_zero_embeddings=options.get("force_cond_zero_embeddings", None),
-                        muti_input=muti_input,
                         imgs=imgs if is_image else None,
                         lowvram_mode=self.lowvram_mode,
                         )
@@ -313,7 +310,7 @@ class sd_optimizer(Optimizer):
 
     
 if __name__ == '__main__':
-    optimizer = sd_optimizer('configs/svd.yaml')
+    optimizer = sd_optimizer('configs/sdxl_turbo.yaml')
 
     mode = 'server'
     if mode == 'server':
@@ -325,8 +322,8 @@ if __name__ == '__main__':
                         state=optimizer.state,
                         prompt=usr_input,
                         #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
-                        video_task=True,
-                        image='inputs/00.jpg',
+                        #video_task=True,
+                        #image='inputs/00.jpg',
                         num_samples=1,
                     )
                     optimizer.waitlists[0].append(req) 

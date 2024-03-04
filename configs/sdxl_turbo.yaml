@@ -1,14 +1,15 @@
-model_name: 'sd_xl'
+model_name: 'sdxl_turbo'
 batch_configs: [32,32,32]
-locations: ['cuda:0','cuda:5','cuda:6']
+locations: ['cuda:0','cuda:4','cuda:5']
 lowvram_mode: False
 dtype: 'half'
+default_steps: 1
 model: {
-        "H": 1024,
-        "W": 1024,
+        "H": 512,
+        "W": 512,
         "C": 4,
         "f": 8,
         "is_legacy": False,
         "config": "configs/inference/sd_xl_base.yaml",
-        "ckpt": "checkpoints/sd_xl_base_1.0.safetensors",
+        "ckpt": "checkpoints/sd_xl_turbo_1.0.safetensors",
     }

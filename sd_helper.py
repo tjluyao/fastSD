@@ -169,6 +169,8 @@ def get_interactive_image(key=None) -> Image.Image:
             image = Image.fromarray(image)
         elif isinstance(image, Image.Image):
             pass
+        elif isinstance(image, list):
+            image = Image.fromarray(np.array(image))
         else:
             raise ValueError(f"unknown image type {type(image)}")
         if not image.mode == "RGB":
@@ -210,7 +212,38 @@ def get_guider(options):
         raise NotImplementedError
     return guider_config
 
+class SubstepSampler(EulerAncestralSampler):
+    def __init__(self, n_sample_steps=1, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.n_sample_steps = n_sample_steps
+        self.steps_subset = [0, 100, 200, 300, 1000]
 
+    def prepare_sampling_loop(self, x, cond, uc=None, num_steps=None):
+        sigmas = self.discretization(
+            self.num_steps if num_steps is None else num_steps, device=self.device
+        )
+        sigmas = sigmas[
+            self.steps_subset[: self.n_sample_steps] + self.steps_subset[-1:]
+        ]
+        uc = cond
+        x *= torch.sqrt(1.0 + sigmas[0] ** 2.0)
+        num_sigmas = len(sigmas)
+        s_in = x.new_ones([x.shape[0]])
+        return x, s_in, sigmas, num_sigmas, cond, uc
+    
+def seeded_randn(shape, seed):
+    randn = np.random.RandomState(seed).randn(*shape)
+    randn = torch.from_numpy(randn).to(device="cuda", dtype=torch.float32)
+    return randn
+
+class SeededNoise:
+    def __init__(self, seed):
+        self.seed = seed
+
+    def __call__(self, x):
+        self.seed = self.seed + 1
+        return seeded_randn(x.shape, self.seed)
+    
 def init_sampling(
     img2img_strength=None,
     stage2strength=None,
@@ -218,7 +251,21 @@ def init_sampling(
     sampler = None,
     discretization = None,
     options: Optional[Dict[str, int]] = None,
+    turbo : bool = False,
+    **kwargs
 ):
+    if turbo:
+        sampler = SubstepSampler(
+        n_sample_steps=steps,
+        num_steps=1000,
+        eta=1.0,
+        discretization_config=dict(
+            target="sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization"
+            ),
+        )
+        sampler.noise_sampler = SeededNoise(seed=kwargs.get("seed", 49))
+        return sampler
+
     options = {} if options is None else options
     discretizations = [
         "LegacyDDPMDiscretization",
@@ -516,11 +563,12 @@ def get_condition(
         F=None,
         additional_batch_uc_fields=None,
         imgs = None,
-        muti_input=False,
         skip_encode=False,
         add_noise=True,
         offset_noise_level=0.0,
         lowvram_mode=False,
+        turbo=False,
+        **kwargs
         ):
     model = state.get("model", None)
     T = state.get("T", T)
@@ -545,17 +593,22 @@ def get_condition(
                     num_samples,
                     T=T,
                     additional_batch_uc_fields=additional_batch_uc_fields,
-                    muti_input=muti_input,
+                    muti_input= True if T is not None else False,
                 )
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
                     batch_uc=batch_uc,
                     force_uc_zero_embeddings=force_uc_zero_embeddings,
                     force_cond_zero_embeddings=force_cond_zero_embeddings,
-                    muti_input=muti_input,
+                    muti_input= True if T is not None else False,
                 )
                 if lowvram_mode:
                     unload_model(model.conditioner)
+                
+                if turbo:
+                    shape = (math.prod(num_samples), C, H // F, W // F)
+                    randn = seeded_randn(shape, kwargs.get("seed", 49))
+                    return randn, c, uc, {}
 
                 for k in c:
                     if not k == "crossattn":
@@ -771,3 +824,20 @@ def save_video_as_grid_and_mp4(
         print(video_bytes)
 
         base_count += 1
+
+def image_to_video(imgs,fps=5):
+    path = "temp.mp4"
+    writer = cv2.VideoWriter(
+        path,
+        cv2.VideoWriter_fourcc(*"MP4V"),
+        5,
+        (imgs.shape[-1], imgs.shape[-2]),
+    )
+    imgs = (
+        (rearrange(imgs, "t c h w -> t h w c") * 255).cpu().numpy().astype(np.uint8)
+    )
+    for frame in imgs:
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        writer.write(frame)
+    writer.release()
+    return path
