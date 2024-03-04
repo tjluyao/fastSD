@@ -1,5 +1,5 @@
 from optimizer import Optimizer, yaml, seed_everything
-from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, rearrange
+from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, rearrange, image_to_video
 from sd_optimizer import sd_request
 import random, time
 from torchvision.utils import make_grid
@@ -239,9 +239,9 @@ class sd_optimizer(Optimizer):
             for req in decode_process:
                 if self.state['T']:
                     output = samples[t:t+req.num]
-                    img = make_grid(output, nrow=5)
-                    req.output = img.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
-                    perform_save_locally(req.output_path, output)
+                    #img = make_grid(output, nrow=5)
+                    #req.output = img.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
+                    req.output = image_to_video(output, self.state['saving_fps'])
                     #save_video_as_grid_and_mp4(output, req.output_path, self.state['T'], self.state['saving_fps'])
                 else:
                     output = samples[t:t+req.num]

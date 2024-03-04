@@ -43,7 +43,6 @@ app = Flask(__name__)
 @app.route('/', methods=['POST', 'GET'])
 async def handle_request():
     if request.method == 'POST':
-
         data = request.get_json()  
         if data['model_name'] == 'stable_diffusion 2.1':
             optimizer = server.optimizers[0]
@@ -53,6 +52,17 @@ async def handle_request():
                         video_task=False,
                         num_samples=1,
                     )
+            optimizer.waitlists[0].append(req)
+            print('Request added')
+            while req.output is None:
+                await asyncio.sleep(0.1)
+            img = Image.fromarray(np.uint8(req.output))
+            image_stream = BytesIO()
+            img.save(image_stream, format='JPEG')
+            image_stream.seek(0)
+            print('Request sending')
+            return send_file(image_stream, mimetype='image/jpeg')
+            
         else:
             optimizer = server.optimizers[1]
             img = Image.fromarray(np.uint8(data['img_in']))
@@ -63,19 +73,11 @@ async def handle_request():
                         image=img,
                         num_samples=1,
                     )
-        
-        optimizer.waitlists[0].append(req)
-        print('Request added')
-        while req.output is None:
-            await asyncio.sleep(0.1)
-        
-        img = Image.fromarray(np.uint8(req.output))
-        image_stream = BytesIO()
-        img.save(image_stream, format='JPEG')
-        image_stream.seek(0)
-        print('Request sending')
-        return send_file(image_stream, mimetype='image/jpeg')
-    
+            optimizer.waitlists[0].append(req)
+            print('Request added')
+            while req.output is None:
+                await asyncio.sleep(0.1)
+            return send_file(req.output, mimetype='video/mp4')
     elif request.method == 'GET':
         return 'Received GET request'
 

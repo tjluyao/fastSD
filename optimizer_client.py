@@ -12,13 +12,18 @@ def tti_conn(model_name, text, server_url):
 def itv_conn(model_name, text, server_url, img_in):
     img_in = img_in.tolist()
     response = requests.post(server_url, json={'model_name': model_name, 'prompt': text, 'img_in': img_in})
-    image = response.content
-    return Image.open(io.BytesIO(image))
+    #image = response.content
+    #return Image.open(io.BytesIO(image))
+    video_bytes = response.content
+    with open('temp_out.mp4', 'wb') as f:
+        f.write(video_bytes)
+    return 'temp_out.mp4'
 
 with gr.Blocks() as interface:
     gr.Markdown("## Optimizer Client for Stable Diffusion")
     gr.Markdown("This is a client for the stable diffusion model. It can be used to generate images from text prompts.")
     with gr.Tab(label="tti"):
+        gr.Markdown("Input: Text prompt of image description.// Output: Generated Image Sample")
         model_name = gr.CheckboxGroup(label="Model", choices=["stable_diffusion xl", "stable_diffusion 2.1"])
         txt_in = gr.Textbox(value='A cat', label="Input text", placeholder="Type something here...")
         url = gr.Textbox(value='http://127.0.0.1:5000/', label="Server URL", placeholder="http://")
@@ -28,13 +33,13 @@ with gr.Blocks() as interface:
     
     with gr.Tab(label="itv"):
         model_name = gr.Label("Stable Video Diffusion")
+        gr.Markdown("Input: Image sample of video generation.// Output: Generated Video")
         txt_in = gr.Textbox(value='A cat', label="Input text", placeholder="Type something here...")
         url = gr.Textbox(value='http://127.0.0.1:5000/', label="Server URL", placeholder="http://")
         img_in = gr.Image(label='Input image', sources='upload')
-        img_out = gr.Image(label='Output image')
-        #video_out = gr.Video(label='Output video')
+        video_out = gr.Video(label='Output video')
         trigger = gr.Button('Send request')
-        trigger.click(itv_conn, inputs=[model_name, txt_in, url, img_in], outputs=img_out)
+        trigger.click(itv_conn, inputs=[model_name, txt_in, url, img_in], outputs=video_out)
     
     gr.Markdown("Author: 沈骏一")
 
