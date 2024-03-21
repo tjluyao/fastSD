@@ -225,7 +225,7 @@ class sd_request():
             keys,
             {},
             )
-            img = load_img_for_prediction(W, H, display=False, key=img)
+            img, self.w, self.h = load_img_for_prediction(W, H, display=False, key=img)
             cond_aug = 0.02
             value_dict["image_only_indicator"] = 0
             value_dict["cond_frames_without_noise"] = img

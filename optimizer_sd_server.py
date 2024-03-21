@@ -51,11 +51,11 @@ async def handle_request():
             if data['model_name'] == 'stable_diffusion 2.1':
                 optimizer = server.optimizers[0]
             elif data['model_name'] == 'stable_diffusion xl':
-                pass
+                optimizer = server.optimizers[0]
             elif data['model_name'] == 'stable_diffusion xl-turbo':
                 optimizer = server.optimizers[2]
             elif data['model_name'] == 'stable_diffusion-turbo':
-                pass
+                optimizer = server.optimizers[2]
             else:
                 raise ValueError('Invalid model name')
             
@@ -100,7 +100,7 @@ async def handle_request():
         return 'Received GET request'
 
 if __name__ == '__main__':
-    server = sd_server(config_files=['configs/sd_21_512.yaml',
+    server = sd_server(config_files=['configs/sd_xl.yaml',
                                      'configs/svd.yaml',
                                      'configs/sdxl_turbo.yaml'
                                      ])

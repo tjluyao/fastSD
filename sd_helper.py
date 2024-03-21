@@ -782,7 +782,7 @@ def load_img_for_prediction(
         numpy_img = np.transpose(image[0].numpy(), (1, 2, 0))
         pil_image = Image.fromarray((numpy_img * 255).astype(np.uint8))
         print(pil_image)
-    return image.to(device) * 2.0 - 1.0
+    return image.to(device) * 2.0 - 1.0, w, h
 
 import cv2
 from glob import glob
@@ -825,7 +825,7 @@ def save_video_as_grid_and_mp4(
 
         base_count += 1
 
-def image_to_video(imgs,fps=5):
+def image_to_video(imgs,fps=5,size=None):
     path = "temp.mp4"
     writer = cv2.VideoWriter(
         path,
@@ -838,6 +838,8 @@ def image_to_video(imgs,fps=5):
     )
     for frame in imgs:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        if size:
+            frame = cv2.resize(frame, size)
         writer.write(frame)
     writer.release()
     return path

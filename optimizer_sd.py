@@ -2,6 +2,7 @@ from optimizer import Optimizer, yaml, seed_everything
 from sd_helper import get_condition, load_model, unload_model, save_video_as_grid_and_mp4, torch, EDMSampler, autocast, perform_save_locally, append_dims, rearrange, image_to_video
 from sd_optimizer import sd_request
 import random, time
+import cv2
 
 class sd_optimizer(Optimizer):
     def __init__(self, config_file):
@@ -168,7 +169,8 @@ class sd_optimizer(Optimizer):
                             imgs += [req.img]*req.num
                         imgs = torch.cat(imgs, dim=0)
                         if self.dtype_half: 
-                            imgs = imgs.half()
+                            pass
+                            #imgs = imgs.half()
                     z, c, uc, additional_model_inputs= get_condition(
                         state,
                         value_dicts, 
@@ -238,11 +240,13 @@ class sd_optimizer(Optimizer):
                     output = samples[t:t+req.num]
                     #img = make_grid(output, nrow=5)
                     #req.output = img.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
-                    req.output = image_to_video(output, self.state['saving_fps'])
+                    req.output = image_to_video(output, self.state['saving_fps'], (req.w, req.h) if hasattr(req,'w') else None)
                     #save_video_as_grid_and_mp4(output, req.output_path, self.state['T'], self.state['saving_fps'])
                 else:
                     output = samples[t:t+req.num]
                     req.output = 255.0 * rearrange(output[0].cpu().numpy(), "c h w -> h w c")
+                    if hasattr(req,'w'):
+                        req.output = cv2.resize(req.output, (req.w, req.h))
                     perform_save_locally(req.output_path, output)
                 t = t + req.num
                 req.state = None
@@ -310,7 +314,7 @@ class sd_optimizer(Optimizer):
 
     
 if __name__ == '__main__':
-    optimizer = sd_optimizer('configs/sdxl_turbo.yaml')
+    optimizer = sd_optimizer('configs/sd_lora.yaml')
 
     mode = 'server'
     if mode == 'server':
@@ -321,7 +325,7 @@ if __name__ == '__main__':
                     req = sd_request(
                         state=optimizer.state,
                         prompt=usr_input,
-                        #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
+                        lora_pth='checkpoints/Stop-Motion Animation.safetensors',
                         #video_task=True,
                         #image='inputs/00.jpg',
                         num_samples=1,
