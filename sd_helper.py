@@ -826,7 +826,7 @@ def save_video_as_grid_and_mp4(
         base_count += 1
 
 def image_to_video(imgs,fps=5,size=None):
-    path = "temp.mp4"
+    path = "/temp/temp.mp4"
     writer = cv2.VideoWriter(
         path,
         cv2.VideoWriter_fourcc(*"MP4V"),

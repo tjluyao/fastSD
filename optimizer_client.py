@@ -19,7 +19,7 @@ def itv_conn(model_name, text, server_url, img_in):
     #image = response.content
     #return Image.open(io.BytesIO(image))
     video_bytes = response.content
-    with open('temp_out.mp4', 'wb') as f:
+    with open('temp/temp_out.mp4', 'wb') as f:
         f.write(video_bytes)
     return 'temp_out.mp4'
 

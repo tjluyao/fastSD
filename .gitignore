@@ -18,3 +18,4 @@ __pycache__/
 /lora_weights
 /inputs
 /results
+/temp
