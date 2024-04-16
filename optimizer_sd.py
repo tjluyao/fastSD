@@ -57,28 +57,32 @@ class sd_optimizer(Optimizer):
                 continue
 
             batch_size = self.batch_configs[i]
+            if len(waitlist) < batch_size:
+                continue
+
             batch = self.select(waitlist,batch_size)
             for item in batch:
                 waitlist.remove(item)
             
             if i == 0:
-                t_start = time.time()
+                #t_start = time.time()
                 self.preprocess(batch)
-                t_end = time.time()
+                #t_end = time.time()
             elif i == 1:
-                t_start = time.time()
+                #t_start = time.time()
                 self.iteration(batch)
-                t_end = time.time()
+                #t_end = time.time()
             elif i == 2:
-                t_start = time.time()
+                #t_start = time.time()
                 self.postprocess(batch)
                 t_end = time.time()
 
             for item in batch:
-                item.time_list = item.time_list + [t_start, t_end]
+                #item.time_list = item.time_list + [t_start, t_end]
                 if isinstance(item.state,int):
                     self.waitlists[item.state].append(item)
                 else:
+                    data_log.append(t_end-item.time)
                     del item
 
     def iteration(self, sampling, **kwargs):
@@ -247,9 +251,10 @@ class sd_optimizer(Optimizer):
                     req.output = 255.0 * rearrange(output[0].cpu().numpy(), "c h w -> h w c")
                     if hasattr(req,'w'):
                         req.output = cv2.resize(req.output, (req.w, req.h))
-                    perform_save_locally(req.output_path, output)
+                    #perform_save_locally(req.output_path, output)
                 t = t + req.num
                 req.state = None
+        return decode_process
 
     def fill_input(self):
         if len(self.waitlists[0]) < self.batch_configs[0]:
@@ -270,7 +275,7 @@ class sd_optimizer(Optimizer):
             req = sd_request(
                         state=optimizer.state,
                         prompt=choice,
-                        #lora_pth='lora_weights/EnvySpeedPaintXL01v11.safetensors',
+                        #lora_pth='checkpoints/pixel-art-xl.safetensors',
                         video_task=False,
                         image='inputs/00.jpg' if is_image else None,
                         num_samples=1,
@@ -280,43 +285,60 @@ class sd_optimizer(Optimizer):
 
     def model_latency_test(self, max_num, sentences, imgs=None, is_image=False):
         output = {}
+        self.warm_up()
         for i in range(1,max_num+1):
-            batch = []
-            for j in range(i):
-                choice = random.choice(sentences)
-                im = random.choice(imgs) if is_image else None
-                req = sd_request(
-                    state=optimizer.state,
-                    prompt=choice,
-                    num_samples=1,
-                    image=im
-                    )
-                batch.append(req)
-            s_time = time.time()
-            batch = self.preprocess(batch)
-            t1 = time.time() - s_time
+            for k in range(50):
+                torch.cuda.empty_cache()
+                t1, t2, t3 = [], [], []
+                batch = []
+                for j in range(i):
+                    choice = random.choice(sentences)
+                    im = random.choice(imgs) if is_image else None
+                    req = sd_request(
+                        state=optimizer.state,
+                        prompt=choice,
+                        num_samples=1,
+                        image=im
+                        )
+                    batch.append(req)
+                s_time = time.time()
+                batch = self.preprocess(batch)
+                t1.append(time.time() - s_time)
 
-            s_time = time.time()
-            batch = self.iteration(batch)
-            t2 = time.time() - s_time
+                s_time = time.time()
+                batch = self.iteration(batch)
+                t2.append(time.time() - s_time)
 
-            s_time = time.time()
-            self.postprocess(batch)
-            t3 = time.time() - s_time
+                s_time = time.time()
+                batch = self.postprocess(batch)
+                t3.append(time.time() - s_time)
 
-            output[str(i)] = [t1,t2,t3]
-            torch.cuda.empty_cache()
+            output[str(i)] = [sum(t1)/len(t1),sum(t2)/len(t2),sum(t3)/len(t3)]
             print(i,t1,t2,t3)
         with open('model_latency.json','w') as f:
             import json
             json.dump(output,f,indent=4)
         exit()
 
+    def warm_up(self):
+        req = sd_request(
+            state=optimizer.state,
+            prompt='Warm up test picture',
+            num_samples=1,
+            image=None
+            )
+        batch = [req]
+        batch = self.preprocess(batch)
+        batch = self.iteration(batch)
+        batch = self.postprocess(batch)
+        print('Finish warm up!')
+        return batch
+
     
 if __name__ == '__main__':
-    optimizer = sd_optimizer('configs/sd_lora.yaml')
+    optimizer = sd_optimizer('configs/sd_xl.yaml')
 
-    mode = 'server'
+    mode = 'test'
     if mode == 'server':
         def get_usr_input():
             while True:
@@ -343,7 +365,7 @@ if __name__ == '__main__':
         imgs = dataset['train']['image']
         sentences = dataset['train']['text']
         data_log = []
-        #optimizer.model_latency_test(max_num=32,sentences=sentences, imgs=imgs, is_image=True)
+        #optimizer.model_latency_test(max_num=16,sentences=sentences, imgs=imgs, is_image=True)
 
         if time_generate:
             generated = 0
@@ -370,7 +392,7 @@ if __name__ == '__main__':
             t.daemon = True
             t.start()
         else:
-            optimizer.create_input(256)
+            optimizer.create_input(512)
 
     test_size=512
     while True:

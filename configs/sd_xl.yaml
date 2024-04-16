@@ -1,5 +1,5 @@
 model_name: 'sd_xl'
-batch_configs: [32,32,32]
+batch_configs: [1,1,1]
 locations: ['cuda:0','cuda:5','cuda:6']
 lowvram_mode: False
 dtype: 'half'

@@ -362,7 +362,7 @@ class visual_model(abstract_model):
 
     def build_projector(self, config):
         if config['model_name'] == 'llava':
-            from models.llava.multimodal_projector import build_vision_projector
+            from models.llava.projector import build_vision_projector
             projector = build_vision_projector(config)
             checkpoint_path = config['checkpoint_path']
             state_dict = torch.load(checkpoint_path)

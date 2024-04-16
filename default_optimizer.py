@@ -1,4 +1,3 @@
-import threading
 import torch
 from pytorch_lightning import seed_everything
 
@@ -8,7 +7,7 @@ class default_optimazer:
                 batch_option: int = 1,
                 max_batch_size: int = 10,
                 seed: int = 49,
-                device: str = 'cuda',
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 **kwargs
                 ):
         seed_everything(seed)

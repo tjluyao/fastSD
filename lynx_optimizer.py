@@ -1,73 +1,13 @@
-from mm_optimizer import mm_optimizer,mm_request
+from mm_optimizer import mm_optimizer, mm_request
 from transformers import LlamaConfig, LlamaTokenizer
 from embedding_llama import LlamaForCausalLM
 import torch
 from punica import BatchedKvCache, BatchLenInfo, KvPool
 from PIL import Image
+from io import BytesIO
+import base64
+from huggingface_hub import hf_hub_download
 
-class lynx_req(mm_request):
-    def __init__(
-            self, 
-            input, 
-            tokenizer, 
-            kvpool, 
-            device='cuda',
-            img_path=None,
-            additional_init_length=576,
-            **kwargs,
-        ):
-        super().__init__(
-            input=input,
-            tokenizer=tokenizer,
-            kvpool=kvpool,
-            device=device,
-            img_path=img_path,
-            temperature=0.9,
-            repetition_penalty=1.0,
-            top_p=0.9,
-            top_k=3,
-            max_new_tokens=500,
-            additional_init_length=additional_init_length,
-            **kwargs,
-        )
-
-    def get_id(self, tokenizer):
-        input = \
-        'User: '+\
-        self.input+\
-        '\nBot:'
-        input_ids = tokenizer.encode(input)
-        return input_ids
-    
-    def load_img(self, img_path, **kwargs):
-        config = kwargs.get('config', None)
-        transform = self.init_image_transform(config)
-        img = Image.open(img_path).convert('RGB')
-        img = transform(img)
-        if kwargs.get('img_dtype', None):
-            img = img.to(kwargs['img_dtype'])
-        print(img.shape)
-        return img.unsqueeze(0)
-
-    def init_image_transform(self, config):
-        from torchvision import transforms
-        from torchvision.transforms import InterpolationMode
-        normalize = transforms.Normalize(config['image_mean'], config['image_std'])
-
-        def _convert_to_rgb(image):
-            return image.convert('RGB')
-
-        transform = transforms.Compose([
-            transforms.Resize(size=config['image_res'], interpolation=InterpolationMode.BICUBIC, max_size=None, antialias=None),
-            transforms.CenterCrop(size=(config['image_res'], config['image_res'])),
-            _convert_to_rgb,
-            transforms.ToTensor(),
-            normalize,
-        ])
-
-        return transform
-
-    
 class lynx_optimizer(mm_optimizer):
     def __init__(self, model_name, **kwargs):
         super().__init__(model_name, **kwargs)
@@ -99,6 +39,8 @@ class lynx_optimizer(mm_optimizer):
             dtype=torch.float16,
             device=self.device,
         )
+        self.additional_init_length = 32
+        self.img_transform = self.init_image_transform(config)
         print('Model initialized.')
 
     def load_weights(self, path):
@@ -174,13 +116,14 @@ class lynx_optimizer(mm_optimizer):
         return tokenizer, num_new_tokens
 
     def build_vision_model(self, config, **kwargs):
-        checkpoint_path = kwargs.get('vision_model_path', None)
+        repo_path = kwargs.get('vision_model_path', None)
+        checkpoint = hf_hub_download(repo_path,filename='EVA01_g_psz14.pt')
         from models.lynx.vits.eva_vit import create_eva_vit_g
         model, missing_keys = create_eva_vit_g(
             config['image_res'], 
             config.get('drop_path_rate', 0.0),
             load_params=True,
-            checkpoint_path=checkpoint_path,
+            checkpoint_path=checkpoint,
             )
         if missing_keys:
             print('Missing keys:', missing_keys)
@@ -201,62 +144,90 @@ class lynx_optimizer(mm_optimizer):
             raise NotImplementedError
         return model.half()
     
-    def preprocess(self, batch):
-        imgs = [req.img for req in batch]
-        imgs = torch.cat(imgs, dim=0).to(self.device)
-        #print(imgs.shape)
-        img_tensors = self.vision_model(imgs)
-        if self.projector:
-            img_tensors,_ = self.projector(img_tensors)
-        for i, req in enumerate(batch):
-            req.img_tensor = img_tensors[i]
-            self.prefill(req)
-            self.wait_runtime.append(req)
-        return batch
+    def init_image_transform(self, config):
+        from torchvision import transforms
+        from torchvision.transforms import InterpolationMode
+        normalize = transforms.Normalize(config['image_mean'], config['image_std'])
+
+        def _convert_to_rgb(image):
+            return image.convert('RGB')
+
+        transform = transforms.Compose([
+            transforms.Resize(size=config['image_res'], interpolation=InterpolationMode.BICUBIC, max_size=None, antialias=None),
+            transforms.CenterCrop(size=(config['image_res'], config['image_res'])),
+            _convert_to_rgb,
+            transforms.ToTensor(),
+            normalize,
+        ])
+        return transform
     
-    def prefill(self, req):
-        generator = req.generator
-        img_tensor = req.img_tensor.unsqueeze(0)
-        #print(img_tensor.shape)
-        input_ids = torch.tensor(generator.output_ids).to(self.device)
-        input_embeddings = self.id_embedder(input_ids).unsqueeze(0)
-        #print(input_embeddings.shape)
-        input_embeddings = torch.cat([img_tensor,input_embeddings], dim=1)
-        length = len(input_ids) + generator.additional_init_length
-        blen = BatchLenInfo([length], 0, self.device)
-        prefill_kv = BatchedKvCache([generator.kvcache]) if generator.kvcache else None
-        decode_kv = None
+    def preprocess(self, batch):
+        img_features = []
+        for r in batch:
+            img = Image.open(BytesIO(base64.b64decode(r.img))).convert('RGB')
+            img = self.img_transform(img)
+            img_features.append(img)
+        img_features = torch.stack(img_features, dim=0)
+        img_features = self.vision_model(img_features)
+        if self.projector:
+            img_features, _ = self.projector(img_features)
+
+        def get_input(prompt):
+            return 'User: '+ prompt + '\nBot:'
+        
+        input_prompts = [get_input(r.prompt) for r in batch]
+        input_ids = self.tokenizer.batch_encode_plus(
+            input_prompts,
+            return_tensors='pt',
+            padding=True,
+            max_length=1024,
+            truncation=True,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+            )['input_ids'].to(self.device)
+        for i, item in enumerate(batch):
+            item.make_generator(input_ids[i], init_length=len(input_ids[i]) + self.additional_init_length)
+            
+        input_embeddings = self.id_embedder(input_ids)
+        input_embeddings = torch.cat([img_features,input_embeddings], dim=1).half()
+
+        lens = [input_embeddings.size(1) for _ in batch]
+        blen = BatchLenInfo(lens, 0, self.device)
+        prefill_kv = BatchedKvCache([r.generator.kvcache for r in batch])
+
         logits, _ = self.model(
             input_ids = None, 
             blen = blen, 
             prefill_kv = prefill_kv, 
-            decode_kv = decode_kv, 
+            decode_kv = None, 
             input_embeddings = input_embeddings,
             )
-        next_token_id = generator.get_next_token_id(logits[0])
-        generator.append_token(next_token_id)
-        generator.next_token_id = next_token_id
+        logits = logits[blen.indptr[1:] - 1]
+        
+        for i, item in enumerate(batch):
+            reqctx = item.generator
+            next_token_id = reqctx.get_next_token_id(logits[i].unsqueeze(0))
+            reqctx.append_token(next_token_id)
+            item.state = 1
+        return batch
     
 if __name__ == '__main__':
     optimizer = lynx_optimizer(
         model_name='lynx',
-        model_path='checkpoints/vicuna-7b-v1.1',
+        model_path='lmsys/vicuna-7b-v1.1',
         config_path='configs/LYNX.yaml',
-        vision_model_path='checkpoints/EVA-CLIP/EVA01_g_psz14.pt',
+        vision_model_path='QuanSun/EVA-CLIP',
         load_weights=True,
         )
     def get_usr_input():
         while True:
             usr_input = input()
             if usr_input != '\n':
-                req = lynx_req(
+                req = mm_request(
                     usr_input,
                     optimizer.tokenizer,
                     optimizer.kvpool,
-                    img_path='inputs/03.jpg',
-                    config=optimizer.config,
-                    img_dtype=torch.float16,
-                    additional_init_length=32,
+                    img_path='inputs/00.jpg',
                     )
                 optimizer.wait_preprocess.append(req)
     import threading

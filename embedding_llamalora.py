@@ -1,6 +1,5 @@
-'''
-Add embedding process to Llama multi-lora model
-'''
+# Add embedding input to Llama muti-lora model
+# Editor: Junyi Shen
 
 from punica import BatchedKvCache, BatchLenInfo, BatchedLlamaLoraWeight, LoraWeight, BatchedLoraWeight
 from punica.ops import append_kv, batch_decode, batch_prefill, init_kv, rms_norm
@@ -15,8 +14,9 @@ from transformers.models.llama.modeling_llama import (
     ACT2FN,
     LlamaConfig,
     PreTrainedModel,
-    LlamaRMSNorm,
+    #LlamaRMSNorm,
 )
+from einops import rearrange
 
 class LlamaLoraWeight:
     def __init__(
@@ -304,7 +304,16 @@ class LlamaMlpWithLora(nn.Module):
             )
 
         return down
+    
+class LlamaRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
 
+    def forward(self, hidden_states):
+        return rms_norm(hidden_states, self.weight, self.variance_epsilon)
+    
 class LlamaDecoderLayerWithLora(nn.Module):
     def __init__(self, config: LlamaConfig, layer_idx: int):
         super().__init__()
@@ -394,7 +403,7 @@ class LlamaModelWithLora(LlamaPreTrainedModel):
             hidden_states = self.embed_tokens(input_ids)
             torch.cuda.nvtx.range_pop()
         else:
-            hidden_states = input_embeddings
+            hidden_states = rearrange(input_embeddings, "b s h -> (b s) h")
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             torch.cuda.nvtx.range_push(f"layer={layer_idx}")
