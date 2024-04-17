@@ -34,7 +34,7 @@ class llama_req:
         self.lora_id = lora_id
         self.init_length = init_length
         if make_generator:
-            input_ids = self.tokenizer.encode(prompt, return_tensors='pt')
+            input_ids = self.tokenizer.encode(prompt, return_tensors='pt')[0]
             self.make_generator(input_ids)
             
     def make_generator(self,input_ids,init_length=None):
@@ -141,8 +141,8 @@ class llama_optimizer(default_optimazer):
 
 if __name__ == '__main__':
     optimizer = llama_optimizer(
-        'llama2-7b',
-        model_path='checkpoints/Llama-2-7b-chat-hf',
+        model_name='llama2-7b',
+        model_path='meta-llama/Llama-2-7b-chat-hf',
          )
     def get_usr_input():
         while True:
@@ -162,4 +162,4 @@ if __name__ == '__main__':
     while True:
         optimizer.check_prepost()
         optimizer.runtime()
-
+        

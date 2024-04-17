@@ -167,7 +167,7 @@ class lynx_optimizer(mm_optimizer):
             img = Image.open(BytesIO(base64.b64decode(r.img))).convert('RGB')
             img = self.img_transform(img)
             img_features.append(img)
-        img_features = torch.stack(img_features, dim=0)
+        img_features = torch.stack(img_features, dim=0).to(self.device).half()
         img_features = self.vision_model(img_features)
         if self.projector:
             img_features, _ = self.projector(img_features)
@@ -209,6 +209,7 @@ class lynx_optimizer(mm_optimizer):
             next_token_id = reqctx.get_next_token_id(logits[i].unsqueeze(0))
             reqctx.append_token(next_token_id)
             item.state = 1
+            self.wait_runtime.append(item)
         return batch
     
 if __name__ == '__main__':

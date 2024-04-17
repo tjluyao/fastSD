@@ -2,14 +2,15 @@ import torch
 from pytorch_lightning import seed_everything
 
 class default_optimazer:
-    def __init__(self,
-                model_name: str,
-                batch_option: int = 1,
-                max_batch_size: int = 10,
-                seed: int = 49,
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-                **kwargs
-                ):
+    def __init__(
+        self,
+        model_name: str,
+        batch_option: int = 1,
+        max_batch_size: int = 10,
+        seed: int = 49,
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        **kwargs
+        ):
         seed_everything(seed)
         self.model_name = model_name
         self.device = device

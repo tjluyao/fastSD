@@ -1,6 +1,5 @@
 import yaml
 import time
-from punica import KvCache
 from pytorch_lightning import seed_everything
 from model import llama_model, tokenizer_model, tokenizer_decode_model, visual_model, llamalora_model
 

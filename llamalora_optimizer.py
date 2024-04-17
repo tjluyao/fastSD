@@ -3,10 +3,11 @@ import torch
 from llama_optimizer import llama_req, llama_optimizer
 from transformers import AutoTokenizer, LlamaConfig
 from punica import LlamaForCausalLMWithLora, KvPool, BatchLenInfo, BatchedKvCache, LoraWeight, BatchedLlamaLoraWeight
+from huggingface_hub import hf_hub_download
 
 lora_paths = {
-    'fin':'lora_weights/fingpt-forecaster_dow30_llama2-7b_lora',
-    'Chinese':'lora_weights/Chinese-Llama-2-LoRA-7B',
+    'fin':'FinGPT/fingpt-forecaster_dow30_llama2-7b_lora',
+    'Chinese':'hfl/chinese-alpaca-2-lora-7b',
 }
 
 class LlamaLoraWeight:
@@ -91,29 +92,32 @@ class LlamaLoraWeight:
             self.down.copy_from_tensor(ts["down.A"], ts["down.B"])
 
 class llamalora_optimizer(llama_optimizer):
-    def __init__(self,
-                    model_name: str,
-                    batch_option: int = 1,
-                    max_batch_size: int = 10,
-                    seed: int = 49,
-                    **kwargs
-                    ):
-            lora_ids = kwargs.get('lora_ids',None)
-            super().__init__(model_name, batch_option, max_batch_size, seed, **kwargs)
-            self.lora_weights = self.init_lora(lora_ids, 
-                                          self.model_config, 
-                                          device=self.device,
-                                          )
+    def __init__(
+        self,
+        model_name: str,
+        batch_option: int = 1,
+        max_batch_size: int = 10,
+        seed: int = 49,
+        **kwargs
+        ):
+        lora_ids = kwargs.get('lora_ids',None)
+        super().__init__(model_name, batch_option, max_batch_size, seed, **kwargs)
+        self.lora_weights = self.init_lora(
+            lora_ids, 
+            self.model_config, 
+            device=self.device,
+            )
 
     def init_model(self, **kwargs):
         model_path = kwargs.get('model_path',None)
         model_config = LlamaConfig.from_pretrained(model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = LlamaForCausalLMWithLora.from_pretrained(model_path,
-                                                    low_cpu_mem_usage=True,
-                                                    torch_dtype=torch.float16,
-                                                    config=model_config
-                                                    )
+        self.model = LlamaForCausalLMWithLora.from_pretrained(
+            model_path,
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            config=model_config
+            )
         self.model.to(self.device)
         self.model.eval()
         self.kvpool = KvPool(
@@ -125,6 +129,7 @@ class llamalora_optimizer(llama_optimizer):
             device=self.device,
         )
         self.model_config = model_config
+        print('Model initialized.')
  
     def iteration(self,batch):
         prefill_input_ids, prefill_lens, prefill_kv = [], [], []
@@ -173,7 +178,6 @@ class llamalora_optimizer(llama_optimizer):
             if reqctx.is_stop():
                 item.state = 2
                 reqctx.kvcache.release()
-                reqctx.kvcache = None
         return batch
     
     def init_lora(self,
@@ -181,9 +185,9 @@ class llamalora_optimizer(llama_optimizer):
             model_config,
             device=torch.device("cuda:0"),
             dtype=torch.float16,
+            defalut_rank = 16,
             ):
         lora_weights = {}
-        defalut_rank = 16
         lora_weights["empty"] = LlamaLoraWeight(
                 model_config, defalut_rank, dtype, device
             )
@@ -191,11 +195,12 @@ class llamalora_optimizer(llama_optimizer):
             return lora_weights
         for lora in lora_ids:
             path = lora_paths[lora]
-            model_path = path+'/adapter_model.bin'
+            ckpt_path = hf_hub_download(path,filename='adapter_model.bin')
+            config_path = hf_hub_download(path,filename='adapter_config.json')
             tmp = torch.load(
-                    model_path, map_location=device, weights_only=True
+                    ckpt_path, map_location=device, weights_only=True
                 )
-            lora_rank = peft.config.PeftConfigMixin.from_json_file(path+'/adapter_config.json')['r']
+            lora_rank = peft.config.PeftConfigMixin.from_json_file(config_path)['r']
             if lora_rank < 16:
                 lora_weight = LlamaLoraWeight(model_config, lora_rank*2, dtype, device)
             else:
@@ -207,20 +212,7 @@ class llamalora_optimizer(llama_optimizer):
         return lora_weights
     
 def weight_convert(weights,rank):
-    qA = []
-    qB = []
-    kA = []
-    kB = []
-    vA = []
-    vB = []
-    oA = []
-    oB = []
-    gateA = []
-    gateB = []
-    upA = []
-    upB = []
-    downA = []
-    downB = []
+    qA,qB,kA,kB,vA,vB,oA,oB,gateA,gateB,upA,upB,downA,downB = [],[],[],[],[],[],[],[],[],[],[],[],[],[]
     for key in weights.keys():
         if 'q_proj' in key:
             if 'A' in key:
@@ -285,20 +277,22 @@ def weight_convert(weights,rank):
     return weights
 
 if __name__ == '__main__':
-    optimizer = llamalora_optimizer('llama2-7b',
-                                model_path='checkpoints/Llama-2-7b-chat-hf',
-                                lora_ids=['fin','Chinese'],
-                                )
+    optimizer = llamalora_optimizer(
+        model_name='llama2-7b-lora',
+        model_path='meta-llama/Llama-2-7b-chat-hf',
+        lora_ids=['fin','Chinese'],
+        )
                                 
     def get_usr_input():
         while True:
             usr_input = input()
             if usr_input != '\n':
-                req = llama_req(usr_input,
-                                optimizer.tokenizer,
-                                optimizer.kvpool,
-                                lora_id='Chinese',
-                                )
+                req = llama_req(
+                    usr_input,
+                    optimizer.tokenizer,
+                    optimizer.kvpool,
+                    lora_id='fin',
+                    )
                 optimizer.wait_runtime.append(req) 
 
     import threading
@@ -308,4 +302,3 @@ if __name__ == '__main__':
     while True:
         optimizer.check_prepost()
         optimizer.runtime()
-

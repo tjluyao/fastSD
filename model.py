@@ -339,7 +339,7 @@ class visual_model(abstract_model):
     def build_vision_model(self, config):
         model_name = config['model_name']
         if model_name.startswith('openai'):
-            from models.llava.multimodal_encoder.clip_encoder import CLIPVisionTower
+            from models.llava.encoder.clip_encoder import CLIPVisionTower
             model = CLIPVisionTower(model_name, args=config)
             self.image_processor = model.image_processor
             return model
@@ -445,4 +445,3 @@ class visual_model(abstract_model):
         stop_flag = language_model.set_next_token_id(req,logits[0])
         req.is_prefill = False
         return
-
