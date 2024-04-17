@@ -220,21 +220,41 @@ if __name__ == '__main__':
         vision_model_path='QuanSun/EVA-CLIP',
         load_weights=True,
         )
-    def get_usr_input():
-        while True:
-            usr_input = input()
-            if usr_input != '\n':
-                req = mm_request(
-                    usr_input,
-                    optimizer.tokenizer,
-                    optimizer.kvpool,
-                    img_path='inputs/00.jpg',
-                    )
-                optimizer.wait_preprocess.append(req)
-    import threading
-    t = threading.Thread(target=get_usr_input)
-    t.daemon = True
-    t.start()
+    
+    mode = 'test'
+    if mode == 'serve':
+        def get_usr_input():
+            while True:
+                usr_input = input()
+                if usr_input != '\n':
+                    req = mm_request(
+                        usr_input,
+                        optimizer.tokenizer,
+                        optimizer.kvpool,
+                        img_path='inputs/00.jpg',
+                        )
+                    optimizer.wait_preprocess.append(req)
+
+        import threading
+        t = threading.Thread(target=get_usr_input)
+        t.daemon = True
+        t.start()
+    else:
+        req1 = mm_request(
+            'what is in the picture?',
+            optimizer.tokenizer,
+            optimizer.kvpool,
+            img_path='inputs/00.jpg',
+            )
+        req2 = mm_request(
+            'what is the color of the sky?',
+            optimizer.tokenizer,
+            optimizer.kvpool,
+            img_path='inputs/00.jpg',
+            )
+        optimizer.wait_preprocess.append(req1)
+        optimizer.wait_preprocess.append(req2)
     while True:
         optimizer.check_prepost()
         optimizer.runtime()
+        
