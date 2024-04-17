@@ -25,7 +25,7 @@ class tokenizer_model(abstract_model):
             self.prompt = None
     
     def run(self,reqs,**kwargs):
-        inp = [x.input for x in reqs]
+        inp = [x.prompt for x in reqs]
         if self.prompt:
             inp = [self.prompt.format(input=x) for x in inp]
         outs = self.model.batch_encode_plus(inp)['input_ids']
@@ -42,8 +42,7 @@ class tokenizer_decode_model(abstract_model):
     
     def run(self, reqs, **kwargs):
         inp = [x.token_ids for x in reqs]
-        outs = self.model.batch_decode(inp,
-                                       skip_special_tokens=True)
+        outs = self.model.batch_decode(inp, skip_special_tokens=True)
         for i,out in enumerate(outs):
             reqs[i].output = out
             reqs[i].state = self.next_model

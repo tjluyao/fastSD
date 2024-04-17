@@ -7,11 +7,11 @@ from model import llama_model, tokenizer_model, tokenizer_decode_model, visual_m
 class Request():
     def __init__(
             self,
-            input,
+            prompt,
             lora_id = 'empty',
             img_path = None,
         ) -> None:
-        self.input = input
+        self.prompt = prompt
         self.time = time.time()
         self.id = self.time
         self.state = 0
